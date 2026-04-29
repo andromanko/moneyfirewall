@@ -1,0 +1,32 @@
+server:
+  port: 8090
+
+spring:
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_FINTRACTION_HOST:localhost}:${POSTGRES_FINTRACTION_PORT:5432}/${POSTGRES_FINTRACTION_DB:moneyfirewall}
+    username: ${POSTGRES_FINTRACTION_USER:moneyfirewall}
+    password: ${POSTGRES_FINTRACTION_PASSWORD:moneyfirewall}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: ${TZ:Europe/Minsk}
+        format_sql: false
+  flyway:
+    enabled: true
+
+moneyfirewall:
+  telegram:
+    token: ${TELEGRAM_FINTRACTION_BOT_TOKEN:}
+    username: ${TELEGRAM_FINTRACTION_BOT_USERNAME:moneyfirewall_bot}
+  google:
+    serviceAccountJson: ${GOOGLE_SERVICE_ACCOUNT_JSON:}
+    spreadsheetPrefix: ${GOOGLE_SHEETS_PREFIX:MoneyFirewall}
+
+logging:
+  level:
+    root: INFO
+
