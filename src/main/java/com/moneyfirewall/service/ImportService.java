@@ -111,6 +111,10 @@ public class ImportService {
             String normalizedCounterparty = merchantAliasService.normalize(budgetId, op.counterpartyRaw());
             String externalHash = externalHash(budgetId, op.occurredAt(), amount, op.currency(), dir, account.getName(), normalizedCounterparty);
 
+            if (transactionRepository.existsByBudgetIdAndExternalHash(budgetId, externalHash)) {
+                continue;
+            }
+
             Transaction t = new Transaction();
             t.setBudget(budget);
             t.setUser(null);
@@ -129,11 +133,8 @@ public class ImportService {
             t.setImportSession(saved);
             t.setCreatedAt(Instant.now());
 
-            try {
-                transactionRepository.save(t);
-                inserted++;
-            } catch (Exception ignored) {
-            }
+            transactionRepository.save(t);
+            inserted++;
         }
 
         saved.setStatus(ImportStatus.APPLIED);

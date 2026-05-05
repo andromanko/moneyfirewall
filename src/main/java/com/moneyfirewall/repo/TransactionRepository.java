@@ -12,6 +12,8 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
 public interface TransactionRepository extends JpaRepository<Transaction, UUID> {
+    boolean existsByBudgetIdAndExternalHash(UUID budgetId, String externalHash);
+
     @Query("""
             select t from Transaction t
             where t.budget.id = :budgetId
