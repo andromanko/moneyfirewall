@@ -3,22 +3,26 @@ services:
     image: postgres:16
     profiles: ["db"]
     environment:
-      POSTGRES_DB: ${POSTGRES_FINTRACTION_DB:-moneyfirewall}
-      POSTGRES_USER: ${POSTGRES_FINTRACTION_USER:-moneyfirewall}
-      POSTGRES_PASSWORD: ${POSTGRES_FINTRACTION_PASSWORD:-moneyfirewall}
+      POSTGRES_DB: fin-bot-db
+      POSTGRES_USER: moneyfirewall
+      POSTGRES_PASSWORD: moneyfirewall
       TZ: ${TZ:-Europe/Minsk}
     volumes:
       - moneyfirewall_pg:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
 
   db_init:
     image: postgres:16
     profiles: ["db_init"]
+    depends_on:
+      - postgres
     environment:
-      POSTGRES_FINTRACTION_HOST: localhost
+      POSTGRES_FINTRACTION_HOST: postgres
       POSTGRES_FINTRACTION_PORT: 5432
-      POSTGRES_FINTRACTION_DB: ${POSTGRES_FINTRACTION_DB:-moneyfirewall}
-      POSTGRES_FINTRACTION_ADMIN_USER: ${POSTGRES_FINTRACTION_ADMIN_USER:-postgres}
-      POSTGRES_FINTRACTION_ADMIN_PASSWORD: ${POSTGRES_FINTRACTION_ADMIN_PASSWORD:-}
+      POSTGRES_FINTRACTION_DB: fin-bot-db
+      POSTGRES_FINTRACTION_ADMIN_USER: postgres
+      POSTGRES_FINTRACTION_ADMIN_PASSWORD: ""
     entrypoint: ["/bin/bash","-lc"]
     command: >
       export PGPASSWORD="$POSTGRES_FINTRACTION_ADMIN_PASSWORD";
@@ -38,11 +42,11 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      POSTGRES_FINTRACTION_HOST: ${POSTGRES_FINTRACTION_HOST:-postgres}
-      POSTGRES_FINTRACTION_PORT: ${POSTGRES_FINTRACTION_PORT:-5432}
-      POSTGRES_FINTRACTION_DB: ${POSTGRES_FINTRACTION_DB:-moneyfirewall}
-      POSTGRES_FINTRACTION_USER: ${POSTGRES_FINTRACTION_USER:-moneyfirewall}
-      POSTGRES_FINTRACTION_PASSWORD: ${POSTGRES_FINTRACTION_PASSWORD:-moneyfirewall}
+      POSTGRES_FINTRACTION_HOST: postgres
+      POSTGRES_FINTRACTION_PORT: 5432
+      POSTGRES_FINTRACTION_DB: fin-bot-db
+      POSTGRES_FINTRACTION_USER: moneyfirewall
+      POSTGRES_FINTRACTION_PASSWORD: moneyfirewall
       TELEGRAM_FINTRACTION_BOT_TOKEN: ${TELEGRAM_FINTRACTION_BOT_TOKEN:-}
       TELEGRAM_FINTRACTION_BOT_USERNAME: ${TELEGRAM_FINTRACTION_BOT_USERNAME:-moneyfirewall_bot}
       GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON:-}

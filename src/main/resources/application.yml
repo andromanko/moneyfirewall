@@ -3,7 +3,7 @@ server:
 
 spring:
   datasource:
-    url: jdbc:postgresql://${POSTGRES_FINTRACTION_HOST:localhost}:${POSTGRES_FINTRACTION_PORT:5432}/${POSTGRES_FINTRACTION_DB:moneyfirewall}
+    url: jdbc:postgresql://${POSTGRES_FINTRACTION_HOST:localhost}:${POSTGRES_FINTRACTION_PORT:5432}/${POSTGRES_FINTRACTION_DB:fin-bot-db}
     username: ${POSTGRES_FINTRACTION_USER:moneyfirewall}
     password: ${POSTGRES_FINTRACTION_PASSWORD:moneyfirewall}
   jpa:
