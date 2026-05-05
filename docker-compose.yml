@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:16
+    container_name: fin-bot-db
     profiles: ["db"]
     environment:
       POSTGRES_DB: fin-bot-db
@@ -18,7 +19,7 @@ services:
     depends_on:
       - postgres
     environment:
-      POSTGRES_FINTRACTION_HOST: postgres
+      POSTGRES_FINTRACTION_HOST: fin-bot-db
       POSTGRES_FINTRACTION_PORT: 5432
       POSTGRES_FINTRACTION_DB: fin-bot-db
       POSTGRES_FINTRACTION_ADMIN_USER: postgres
@@ -42,7 +43,7 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      POSTGRES_FINTRACTION_HOST: postgres
+      POSTGRES_FINTRACTION_HOST: fin-bot-db
       POSTGRES_FINTRACTION_PORT: 5432
       POSTGRES_FINTRACTION_DB: fin-bot-db
       POSTGRES_FINTRACTION_USER: moneyfirewall
