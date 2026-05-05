@@ -10,7 +10,7 @@ services:
     volumes:
       - moneyfirewall_pg:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "5433:5432"
 
   db_init:
     image: postgres:16
