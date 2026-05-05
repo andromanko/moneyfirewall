@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_DB: fin-bot-db
       POSTGRES_USER: moneyfirewall
-      POSTGRES_PASSWORD: moneyfirewall
+      POSTGRES_PASSWORD: "abezyany_TUT_niprichEM!!!-)))"
       TZ: ${TZ:-Europe/Minsk}
     volumes:
       - moneyfirewall_pg:/var/lib/postgresql/data
@@ -26,12 +26,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    env_file:
+      - .env
     environment:
       POSTGRES_FINTRACTION_HOST: fin-bot-db
       POSTGRES_FINTRACTION_PORT: 5432
       POSTGRES_FINTRACTION_DB: fin-bot-db
-      POSTGRES_FINTRACTION_ADMIN_USER: postgres
-      POSTGRES_FINTRACTION_ADMIN_PASSWORD: ""
     entrypoint: ["/bin/bash","-lc"]
     command: >
       export PGPASSWORD="$POSTGRES_FINTRACTION_ADMIN_PASSWORD";
