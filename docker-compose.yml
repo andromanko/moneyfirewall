@@ -57,7 +57,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "${APP_PORT:-8080}:8080"
+      - "8082:8080"
 
 volumes:
   moneyfirewall_pg:
