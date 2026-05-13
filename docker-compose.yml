@@ -4,15 +4,15 @@ services:
     container_name: fin-bot-db
     environment:
       POSTGRES_DB: fin-bot-db
-      POSTGRES_USER: moneyfirewall
-      POSTGRES_PASSWORD: "abezyany_TUT_niprichEM!!!-)))"
+      POSTGRES_USER: ${POSTGRES_FINTRACTION_USER:-moneyfirewall}
+      POSTGRES_PASSWORD: ${POSTGRES_FINTRACTION_PASSWORD:-abezyany_TUT_niprichEM!!!-)))}
       TZ: ${TZ:-Europe/Minsk}
     volumes:
       - moneyfirewall_pg:/var/lib/postgresql/data
     ports:
       - "5433:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U moneyfirewall -d fin-bot-db"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -20,33 +20,6 @@ services:
       moneyfirewall_net:
         aliases:
           - fin-bot-db
-
-  db_init:
-    image: postgres:16
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      POSTGRES_FINTRACTION_HOST: fin-bot-db
-      POSTGRES_FINTRACTION_PORT: 5432
-      POSTGRES_FINTRACTION_DB: fin-bot-db
-      POSTGRES_FINTRACTION_ADMIN_USER: romaraless-fin
-      POSTGRES_FINTRACTION_ADMIN_PASSWORD: "forty_FOUR-thousandsOfMonKeys_makeBabanaASS!!!"
-    entrypoint: ["/bin/bash","-lc"]
-    command: >
-      export PGPASSWORD="$POSTGRES_FINTRACTION_ADMIN_PASSWORD";
-      until pg_isready -h "$POSTGRES_FINTRACTION_HOST" -p "$POSTGRES_FINTRACTION_PORT" -U "$POSTGRES_FINTRACTION_ADMIN_USER"; do
-        sleep 1;
-      done;
-      psql -h "$POSTGRES_FINTRACTION_HOST" -p "$POSTGRES_FINTRACTION_PORT" -U "$POSTGRES_FINTRACTION_ADMIN_USER" -d postgres
-      -v ON_ERROR_STOP=1
-      -tc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_FINTRACTION_DB}'" | grep -q 1
-      || psql -h "$POSTGRES_FINTRACTION_HOST" -p "$POSTGRES_FINTRACTION_PORT" -U "$POSTGRES_FINTRACTION_ADMIN_USER" -d postgres
-         -v ON_ERROR_STOP=1
-         -c "CREATE DATABASE \\\"${POSTGRES_FINTRACTION_DB}\\\";";
-      echo "db_init done";
-    networks:
-      - moneyfirewall_net
 
   app:
     build:
@@ -56,11 +29,11 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      POSTGRES_FINTRACTION_HOST: fin-bot-db
-      POSTGRES_FINTRACTION_PORT: 5432
-      POSTGRES_FINTRACTION_DB: fin-bot-db
-      POSTGRES_FINTRACTION_USER: moneyfirewall
-      POSTGRES_FINTRACTION_PASSWORD: moneyfirewall
+      POSTGRES_FINTRACTION_HOST: ${POSTGRES_FINTRACTION_HOST:-fin-bot-db}
+      POSTGRES_FINTRACTION_PORT: ${POSTGRES_FINTRACTION_PORT:-5432}
+      POSTGRES_FINTRACTION_DB: ${POSTGRES_FINTRACTION_DB:-fin-bot-db}
+      POSTGRES_FINTRACTION_USER: ${POSTGRES_FINTRACTION_USER:-moneyfirewall}
+      POSTGRES_FINTRACTION_PASSWORD: ${POSTGRES_FINTRACTION_PASSWORD:-abezyany_TUT_niprichEM!!!-)))}
       TELEGRAM_FINTRACTION_BOT_TOKEN: ${TELEGRAM_FINTRACTION_BOT_TOKEN:-}
       TELEGRAM_FINTRACTION_BOT_USERNAME: ${TELEGRAM_FINTRACTION_BOT_USERNAME:-moneyfirewall_bot}
       GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON:-}
