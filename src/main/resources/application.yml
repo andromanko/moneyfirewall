@@ -29,4 +29,5 @@ moneyfirewall:
 logging:
   level:
     root: INFO
+    com.moneyfirewall.importing: DEBUG
 

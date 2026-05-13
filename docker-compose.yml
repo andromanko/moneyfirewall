@@ -26,12 +26,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    env_file:
-      - .env
     environment:
       POSTGRES_FINTRACTION_HOST: fin-bot-db
       POSTGRES_FINTRACTION_PORT: 5432
       POSTGRES_FINTRACTION_DB: fin-bot-db
+      POSTGRES_FINTRACTION_ADMIN_USER: romaraless-fin
+      POSTGRES_FINTRACTION_ADMIN_PASSWORD: "forty_FOUR-thousandsOfMonKeys_makeBabanaASS!!!"
     entrypoint: ["/bin/bash","-lc"]
     command: >
       export PGPASSWORD="$POSTGRES_FINTRACTION_ADMIN_PASSWORD";

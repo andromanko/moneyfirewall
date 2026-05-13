@@ -22,17 +22,21 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDate;
 import java.time.Instant;
-import java.time.Duration;
 import java.time.ZoneOffset;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class ImportService {
+    private static final Logger log = LoggerFactory.getLogger(ImportService.class);
+
     private final ImportSessionRepository importSessionRepository;
     private final TransactionRepository transactionRepository;
     private final BudgetRepository budgetRepository;
@@ -62,6 +66,10 @@ public class ImportService {
         this.transferLinkingService = transferLinkingService;
     }
 
+    public boolean canImport(String bankCode, ImportFileType fileType) {
+        return parsers.stream().anyMatch(p -> p.supports(bankCode, fileType));
+    }
+
     @Transactional
     public ImportResult importFile(UUID budgetId, UUID uploadedByUserId, String bankCode, ImportFileType fileType, String telegramFileId, byte[] bytes) throws Exception {
         String sha256 = sha256Hex(bytes);
@@ -86,9 +94,18 @@ public class ImportService {
         BankStatementParser parser = parsers.stream()
                 .filter(p -> p.supports(bankCode, fileType))
                 .findFirst()
-                .orElseThrow();
+                .orElseThrow(() -> new IllegalStateException("No parser for bank=" + bankCode + " fileType=" + fileType));
 
         List<ParsedOperation> ops = parser.parse(bytes);
+        log.info(
+                "import parsed sessionId={} bankCode={} fileType={} parser={} operations={} bytes={}",
+                saved.getId(),
+                bankCode,
+                fileType,
+                parser.getClass().getSimpleName(),
+                ops.size(),
+                bytes.length
+        );
         saved.setStatus(ImportStatus.PARSED);
 
         int inserted = 0;
@@ -137,9 +154,22 @@ public class ImportService {
             inserted++;
         }
 
+        log.info(
+                "import applied sessionId={} bankCode={} fileType={} inserted={} skippedAsDuplicate={}",
+                saved.getId(),
+                bankCode,
+                fileType,
+                inserted,
+                ops.size() - inserted
+        );
+
         saved.setStatus(ImportStatus.APPLIED);
         importSessionRepository.save(saved);
-        transferLinkingService.autoLink(budgetId, Duration.ofHours(48));
+        if (!ops.isEmpty()) {
+            Instant minOccurred = ops.stream().map(ParsedOperation::occurredAt).min(Comparator.naturalOrder()).orElseThrow();
+            Instant maxOccurred = ops.stream().map(ParsedOperation::occurredAt).max(Comparator.naturalOrder()).orElseThrow();
+            transferLinkingService.autoLinkAfterImport(budgetId, minOccurred, maxOccurred);
+        }
         return new ImportResult(saved.getId(), inserted, false);
     }
 

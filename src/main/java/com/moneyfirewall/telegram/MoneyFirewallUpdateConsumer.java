@@ -20,18 +20,20 @@ import com.moneyfirewall.reporting.ExcelReportExporter;
 import com.moneyfirewall.reporting.GoogleSheetsExporter;
 import com.moneyfirewall.reporting.ReportTables;
 import com.moneyfirewall.service.UserService;
-import com.moneyfirewall.service.WateringAutomationService;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Component;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.telegram.telegrambots.longpolling.interfaces.LongPollingUpdateConsumer;
 import org.telegram.telegrambots.meta.api.objects.CallbackQuery;
 import org.telegram.telegrambots.meta.api.objects.Update;
@@ -43,6 +45,7 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKe
 
 @Component
 public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
+    private static final Logger log = LoggerFactory.getLogger(MoneyFirewallUpdateConsumer.class);
     private static final Pattern TOTAL_PATTERN = Pattern.compile("(?im)^\\s*Итого\\s*[—:-]\\s*([0-9][0-9\\s.,]*)\\s*$");
     private final TelegramSender sender;
     private final UserService userService;
@@ -61,7 +64,6 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
     private final ExcelReportExporter excelReportExporter;
     private final GoogleSheetsExporter googleSheetsExporter;
     private final ReceiptRecognitionService receiptRecognitionService;
-    private final WateringAutomationService wateringAutomationService;
 
     public MoneyFirewallUpdateConsumer(
             TelegramSender sender,
@@ -80,8 +82,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             ReportService reportService,
             ExcelReportExporter excelReportExporter,
             GoogleSheetsExporter googleSheetsExporter,
-            ReceiptRecognitionService receiptRecognitionService,
-            WateringAutomationService wateringAutomationService
+            ReceiptRecognitionService receiptRecognitionService
     ) {
         this.sender = sender;
         this.userService = userService;
@@ -100,7 +101,6 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         this.excelReportExporter = excelReportExporter;
         this.googleSheetsExporter = googleSheetsExporter;
         this.receiptRecognitionService = receiptRecognitionService;
-        this.wateringAutomationService = wateringAutomationService;
     }
 
     @Override
@@ -375,33 +375,6 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         }
     }
 
-    private void onWatering(long chatId, UUID userId) {
-        sender.sendText(chatId, "💧 Полив", wateringMenu());
-    }
-
-    private void onWateringAutomation(long chatId, UUID userId) {
-        var s = wateringAutomationService.getOrCreate(userId);
-        String status = s.isEnabled() ? "включено" : "выключено";
-        sender.sendText(chatId, "🤖 Автоматика\n" +
-                "Статус: " + status + "\n" +
-                "Интервал: " + s.getIntervalMinutes() + " мин", wateringAutomationMenu(s.isEnabled()));
-    }
-
-    private void onWateringAutoOn(long chatId, UUID userId) {
-        wateringAutomationService.setEnabled(userId, true);
-        onWateringAutomation(chatId, userId);
-    }
-
-    private void onWateringAutoOff(long chatId, UUID userId) {
-        wateringAutomationService.setEnabled(userId, false);
-        onWateringAutomation(chatId, userId);
-    }
-
-    private void onWateringInterval(long chatId, UUID userId, int minutes) {
-        wateringAutomationService.setIntervalMinutes(userId, minutes);
-        onWateringAutomation(chatId, userId);
-    }
-
     private void onAccountAdd(long chatId, UUID userId, String arg) {
         UUID budgetId = budgetService.getActiveBudgetId(userId);
         if (budgetId == null) {
@@ -529,9 +502,37 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             sender.sendText(chatId, "Сначала выбери бюджет", mainMenu());
             return;
         }
-        String bank = arg == null || arg.isBlank() ? "generic" : arg.trim();
+        if (arg != null && !arg.isBlank()) {
+            onImportWithBank(chatId, userId, arg.trim());
+            return;
+        }
+        onImportMenu(chatId, userId);
+    }
+
+    private void onImportMenu(long chatId, UUID userId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", mainMenu());
+            return;
+        }
+        conversationService.clear(userId);
+        sender.sendText(chatId, "Импорт: выбери банк или формат, затем пришли файл.", importBankMenu());
+    }
+
+    private void onImportWithBank(long chatId, UUID userId, String bank) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", mainMenu());
+            return;
+        }
         conversationService.set(userId, "import", new HashMap<>(Map.of("bank", bank)));
-        sender.sendText(chatId, "Пришли файл JSON или PDF");
+        String hint = switch (bank.toLowerCase(Locale.ROOT)) {
+            case "alfajson" -> "Пришли JSON (экспорт Альфа-Банка, поле items).";
+            case "mtbank" -> "Пришли PDF-выписку МТБанка.";
+            case "oplati" -> "Пришли PDF-выписку ОПЛАТИ / Белинвестбанк.";
+            default -> "Пришли PDF или JSON в общем формате.";
+        };
+        sender.sendText(chatId, hint, importPendingMenu());
     }
 
     private void onImportRollback(long chatId, UUID userId, String arg) {
@@ -567,7 +568,12 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         String bank = st.payload().getOrDefault("bank", "generic").toString();
         String fileId = update.getMessage().getDocument().getFileId();
         String fileName = update.getMessage().getDocument().getFileName();
-        ImportFileType type = fileName != null && fileName.toLowerCase().endsWith(".pdf") ? ImportFileType.PDF : ImportFileType.JSON;
+        ImportFileType type = fileName != null && fileName.toLowerCase(Locale.ROOT).endsWith(".pdf") ? ImportFileType.PDF : ImportFileType.JSON;
+        if (!importService.canImport(bank, type)) {
+            conversationService.clear(userId);
+            sender.sendText(chatId, "Тип файла не подходит выбранному варианту. Выбери снова.", importBankMenu());
+            return true;
+        }
         try {
             byte[] bytes = telegramFileService.downloadByFileId(fileId);
             ImportService.ImportResult res = importService.importFile(budgetId, userId, bank, type, fileId, bytes);
@@ -579,6 +585,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             }
         } catch (Exception e) {
             conversationService.clear(userId);
+            log.warn("import failed bank={} fileName={}", bank, fileName, e);
             sender.sendText(chatId, "Ошибка импорта");
         }
         return true;
@@ -1012,6 +1019,12 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return;
         }
 
+        if (data.startsWith("mf:import:set:")) {
+            String bank = data.substring("mf:import:set:".length());
+            onImportWithBank(chatId, user.getId(), bank);
+            return;
+        }
+
         switch (data) {
             case "mf:menu" -> sender.sendText(chatId, "Меню", menuForUser(user.getId()));
             case "mf:budget_create" -> onBudgetCreateStart(chatId, user.getId());
@@ -1023,7 +1036,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             case "mf:expense_scan_pick_category" -> onExpenseScanSelectCategory(chatId, user.getId());
             case "mf:expense_scan_pick_shop" -> onExpenseScanEnterShop(chatId, user.getId());
             case "mf:transfer" -> onTransfer(chatId, user.getId(), "");
-            case "mf:import" -> onImport(chatId, user.getId(), "generic");
+            case "mf:import" -> onImportMenu(chatId, user.getId());
             case "mf:report" -> onReportMonth(chatId, user.getId(), "");
             case "mf:accounts" -> onAccounts(chatId, user.getId());
             case "mf:accounts_list" -> onAccountsList(chatId, user.getId());
@@ -1031,19 +1044,12 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             case "mf:accounts_rename" -> onAccountsRenameSelect(chatId, user.getId());
             case "mf:accounts_delete" -> onAccountsDeleteSelect(chatId, user.getId());
             case "mf:budget_members" -> onBudgetMembers(chatId, user.getId());
-            case "mf:watering" -> onWatering(chatId, user.getId());
-            case "mf:watering_automation" -> onWateringAutomation(chatId, user.getId());
-            case "mf:watering_auto_on" -> onWateringAutoOn(chatId, user.getId());
-            case "mf:watering_auto_off" -> onWateringAutoOff(chatId, user.getId());
-            case "mf:watering_int_30" -> onWateringInterval(chatId, user.getId(), 30);
-            case "mf:watering_int_60" -> onWateringInterval(chatId, user.getId(), 60);
-            case "mf:watering_int_120" -> onWateringInterval(chatId, user.getId(), 120);
             case "mf:cancel" -> onCancel(chatId, user.getId());
             case "mf:help" -> sender.sendText(chatId, "Помощь\n\n" +
                     "Доход — добавить поступление\n" +
                     "Трата — добавить расход\n" +
                     "Перевод — перевод между счетами/наличными\n" +
-                    "Импорт — загрузить выписку из банка (JSON/PDF)\n" +
+                    "Импорт — меню выбора банка (PDF/JSON), затем файл\n" +
                     "Отчёт (месяц) — выгрузить отчёт за месяц\n" +
                     "Счета / Участники — управление в рамках активного бюджета\n" +
                     "Сброс — вернуться в главное меню", menuForUser(user.getId()));
@@ -1301,21 +1307,22 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 .build();
     }
 
-    private InlineKeyboardMarkup wateringMenu() {
+    private InlineKeyboardMarkup importBankMenu() {
         return InlineKeyboardMarkup.builder()
                 .keyboard(List.of(
-                        new InlineKeyboardRow(btn("🤖 Автоматика", "mf:watering_automation")),
-                        new InlineKeyboardRow(btn("🏠 Меню", "mf:cancel"))
+                        new InlineKeyboardRow(btn("PDF — МТБанк", "mf:import:set:mtbank")),
+                        new InlineKeyboardRow(btn("PDF — ОПЛАТИ / Белинвест", "mf:import:set:oplati")),
+                        new InlineKeyboardRow(btn("PDF / JSON — универсально", "mf:import:set:generic")),
+                        new InlineKeyboardRow(btn("JSON — Альфа-Банк", "mf:import:set:AlfaJson")),
+                        new InlineKeyboardRow(btn("⬅️ Меню", "mf:cancel"))
                 ))
                 .build();
     }
 
-    private InlineKeyboardMarkup wateringAutomationMenu(boolean enabled) {
+    private InlineKeyboardMarkup importPendingMenu() {
         return InlineKeyboardMarkup.builder()
                 .keyboard(List.of(
-                        new InlineKeyboardRow(btn(enabled ? "⏸️ Выключить" : "▶️ Включить", enabled ? "mf:watering_auto_off" : "mf:watering_auto_on")),
-                        new InlineKeyboardRow(btn("⏱️ 30 мин", "mf:watering_int_30"), btn("⏱️ 60 мин", "mf:watering_int_60"), btn("⏱️ 120 мин", "mf:watering_int_120")),
-                        new InlineKeyboardRow(btn("⬅️ Назад", "mf:watering")),
+                        new InlineKeyboardRow(btn("🔁 Другой банк", "mf:import")),
                         new InlineKeyboardRow(btn("🏠 Меню", "mf:cancel"))
                 ))
                 .build();
@@ -1330,7 +1337,6 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                         new InlineKeyboardRow(btn("🔁 Перевод", "mf:transfer"), btn("📥 Импорт", "mf:import")),
                         new InlineKeyboardRow(btn("📊 Отчёт (месяц)", "mf:report")),
                         new InlineKeyboardRow(btn("💳 Счета", "mf:accounts"), btn("👥 Участники", "mf:budget_members")),
-                        new InlineKeyboardRow(btn("💧 Полив", "mf:watering")),
                         new InlineKeyboardRow(btn("❓ Помощь", "mf:help"), btn("🏠 Меню", "mf:cancel"))
                 ))
                 .build();
