@@ -5,7 +5,7 @@ spring:
   datasource:
     url: jdbc:postgresql://${POSTGRES_FINTRACTION_HOST:localhost}:${POSTGRES_FINTRACTION_PORT:5432}/${POSTGRES_FINTRACTION_DB:fin-bot-db}
     username: ${POSTGRES_FINTRACTION_USER:moneyfirewall}
-    password: ${POSTGRES_FINTRACTION_PASSWORD:moneyfirewall}
+    password: ${POSTGRES_FINTRACTION_PASSWORD:abezyany_TUT_niprichEM!!!-)))}
   jpa:
     open-in-view: false
     hibernate:
