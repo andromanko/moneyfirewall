@@ -1,5 +1,6 @@
 package com.moneyfirewall.telegram;
 
+import com.moneyfirewall.config.BuildInfoService;
 import com.moneyfirewall.domain.AccountType;
 import com.moneyfirewall.domain.Budget;
 import com.moneyfirewall.domain.CategoryKind;
@@ -64,6 +65,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
     private final ExcelReportExporter excelReportExporter;
     private final GoogleSheetsExporter googleSheetsExporter;
     private final ReceiptRecognitionService receiptRecognitionService;
+    private final BuildInfoService buildInfoService;
 
     public MoneyFirewallUpdateConsumer(
             TelegramSender sender,
@@ -82,7 +84,8 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             ReportService reportService,
             ExcelReportExporter excelReportExporter,
             GoogleSheetsExporter googleSheetsExporter,
-            ReceiptRecognitionService receiptRecognitionService
+            ReceiptRecognitionService receiptRecognitionService,
+            BuildInfoService buildInfoService
     ) {
         this.sender = sender;
         this.userService = userService;
@@ -101,6 +104,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         this.excelReportExporter = excelReportExporter;
         this.googleSheetsExporter = googleSheetsExporter;
         this.receiptRecognitionService = receiptRecognitionService;
+        this.buildInfoService = buildInfoService;
     }
 
     @Override
@@ -1045,14 +1049,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             case "mf:accounts_delete" -> onAccountsDeleteSelect(chatId, user.getId());
             case "mf:budget_members" -> onBudgetMembers(chatId, user.getId());
             case "mf:cancel" -> onCancel(chatId, user.getId());
-            case "mf:help" -> sender.sendText(chatId, "Помощь\n\n" +
-                    "Доход — добавить поступление\n" +
-                    "Трата — добавить расход\n" +
-                    "Перевод — перевод между счетами/наличными\n" +
-                    "Импорт — меню выбора банка (PDF/JSON), затем файл\n" +
-                    "Отчёт (месяц) — выгрузить отчёт за месяц\n" +
-                    "Счета / Участники — управление в рамках активного бюджета\n" +
-                    "Сброс — вернуться в главное меню", menuForUser(user.getId()));
+            case "mf:help" -> sender.sendText(chatId, helpText(), menuForUser(user.getId()));
             default -> sender.sendText(chatId, "Неизвестно", menuForUser(user.getId()));
         }
     }
@@ -1214,6 +1211,18 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 sender.sendText(chatId, "Ошибка", mainMenu());
             }
         }
+    }
+
+    private String helpText() {
+        return "Помощь\n\n" +
+                "Доход — добавить поступление\n" +
+                "Трата — добавить расход\n" +
+                "Перевод — перевод между счетами/наличными\n" +
+                "Импорт — меню выбора банка (PDF/JSON), затем файл\n" +
+                "Отчёт (месяц) — выгрузить отчёт за месяц\n" +
+                "Счета / Участники — управление в рамках активного бюджета\n" +
+                "Сброс — вернуться в главное меню\n\n" +
+                "Сборка: " + buildInfoService.buildTime();
     }
 
     private InlineKeyboardMarkup menuForUser(UUID userId) {

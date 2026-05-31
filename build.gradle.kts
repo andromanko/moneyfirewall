@@ -1,3 +1,7 @@
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+
 plugins {
     java
     id("org.springframework.boot") version "3.4.5"
@@ -45,5 +49,27 @@ dependencies {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+}
+
+tasks.register("generateBuildInfo") {
+    val outputDir = layout.buildDirectory.dir("generated/resources")
+    outputs.dir(outputDir)
+    doLast {
+        val file = outputDir.get().file("build-info.properties").asFile
+        file.parentFile.mkdirs()
+        val time = ZonedDateTime.now(ZoneId.of("Europe/Minsk"))
+            .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+        file.writeText("build.time=$time\n")
+    }
+}
+
+sourceSets {
+    main {
+        resources.srcDir(layout.buildDirectory.dir("generated/resources"))
+    }
+}
+
+tasks.named("processResources") {
+    dependsOn("generateBuildInfo")
 }
 
