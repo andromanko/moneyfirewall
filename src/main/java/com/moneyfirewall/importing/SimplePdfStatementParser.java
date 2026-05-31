@@ -371,27 +371,29 @@ public class SimplePdfStatementParser implements BankStatementParser {
             return null;
         }
 
-        BigDecimal amount = null;
+        BigDecimal a1 = null;
+        BigDecimal a2 = null;
         for (int i = currencyIdx - 1; i >= 0; i--) {
-            if (AMOUNT.matcher(b.get(i)).matches()) {
-                amount = toAmount(b.get(i));
-                break;
+            String s = b.get(i);
+            if (!(AMOUNT.matcher(s).matches() || looksLikeNumber(s))) {
+                continue;
             }
-        }
-        if (amount == null) {
-            for (int i = 0; i < currencyIdx; i++) {
-                if (looksLikeNumber(b.get(i))) {
-                    amount = new BigDecimal(b.get(i).replace(',', '.'));
-                    break;
-                }
+            BigDecimal v = s.contains(".") || s.contains(",") ? toAmount(s) : new BigDecimal(s);
+            if (a1 == null) {
+                a1 = v;
+                continue;
             }
+            a2 = v;
+            break;
         }
+        BigDecimal amount = a2 != null ? a2 : a1;
         if (amount == null) {
             return null;
         }
 
         String joined = String.join(" ", b);
-        String dir = joined.toLowerCase(Locale.ROOT).contains("пополн") ? "INCOME" : "EXPENSE";
+        String jl = joined.toLowerCase(Locale.ROOT);
+        String dir = (jl.contains("пополн") || jl.contains("поступ") || jl.contains("приход")) ? "INCOME" : "EXPENSE";
 
         String counterparty = extractOplatiCounterparty(b, currencyIdx);
         String description = extractOplatiDescription(b, currencyIdx, id);
