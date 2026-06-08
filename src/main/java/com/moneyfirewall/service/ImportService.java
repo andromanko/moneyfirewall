@@ -1,6 +1,7 @@
 package com.moneyfirewall.service;
 
 import com.moneyfirewall.domain.Account;
+import com.moneyfirewall.domain.Category;
 import com.moneyfirewall.domain.AccountType;
 import com.moneyfirewall.domain.Budget;
 import com.moneyfirewall.domain.ImportFileType;
@@ -45,6 +46,8 @@ public class ImportService {
     private final List<BankStatementParser> parsers;
     private final MerchantAliasService merchantAliasService;
     private final TransferLinkingService transferLinkingService;
+    private final CategoryRuleService categoryRuleService;
+    private final CategoryService categoryService;
 
     public ImportService(
             ImportSessionRepository importSessionRepository,
@@ -54,7 +57,9 @@ public class ImportService {
             UserRepository userRepository,
             List<BankStatementParser> parsers,
             MerchantAliasService merchantAliasService,
-            TransferLinkingService transferLinkingService
+            TransferLinkingService transferLinkingService,
+            CategoryRuleService categoryRuleService,
+            CategoryService categoryService
     ) {
         this.importSessionRepository = importSessionRepository;
         this.transactionRepository = transactionRepository;
@@ -64,17 +69,23 @@ public class ImportService {
         this.parsers = parsers;
         this.merchantAliasService = merchantAliasService;
         this.transferLinkingService = transferLinkingService;
+        this.categoryRuleService = categoryRuleService;
+        this.categoryService = categoryService;
     }
 
     public boolean canImport(String bankCode, ImportFileType fileType) {
-        return parsers.stream().anyMatch(p -> p.supports(bankCode, fileType));
+        boolean ok = parsers.stream().anyMatch(p -> p.supports(bankCode, fileType));
+        log.debug("canImport bankCode={} fileType={} -> {}", bankCode, fileType, ok);
+        return ok;
     }
 
     @Transactional
     public ImportResult importFile(UUID budgetId, UUID uploadedByUserId, String bankCode, ImportFileType fileType, String telegramFileId, byte[] bytes) throws Exception {
         String sha256 = sha256Hex(bytes);
+        log.debug("import start budgetId={} bankCode={} fileType={} bytes={} sha256={}", budgetId, bankCode, fileType, bytes.length, sha256);
         Optional<ImportSession> existing = importSessionRepository.findByBudgetIdAndSha256(budgetId, sha256);
         if (existing.isPresent()) {
+            log.debug("import duplicate file budgetId={} existingSessionId={}", budgetId, existing.get().getId());
             return new ImportResult(existing.get().getId(), 0, true);
         }
 
@@ -97,18 +108,16 @@ public class ImportService {
                 .orElseThrow(() -> new IllegalStateException("No parser for bank=" + bankCode + " fileType=" + fileType));
 
         List<ParsedOperation> ops = parser.parse(bytes);
-        log.info(
-                "import parsed sessionId={} bankCode={} fileType={} parser={} operations={} bytes={}",
+        log.debug(
+                "import parsed sessionId={} parser={} operations={}",
                 saved.getId(),
-                bankCode,
-                fileType,
                 parser.getClass().getSimpleName(),
-                ops.size(),
-                bytes.length
+                ops.size()
         );
         saved.setStatus(ImportStatus.PARSED);
 
         int inserted = 0;
+        int skipped = 0;
         for (ParsedOperation op : ops) {
             String accountName = op.accountName() == null || op.accountName().isBlank() ? "Imported" : op.accountName();
             Account account = accountRepository.findByBudgetIdAndName(budgetId, accountName)
@@ -125,12 +134,36 @@ public class ImportService {
 
             TransactionDirection dir = TransactionDirection.valueOf(op.direction().toUpperCase());
             BigDecimal amount = op.amount();
-            String normalizedCounterparty = merchantAliasService.normalize(budgetId, op.counterpartyRaw());
+            String counterpartyRaw = categoryService.normalizeMtbankMinskCounterparty(op.counterpartyRaw());
+            String normalizedCounterparty = merchantAliasService.normalize(budgetId, counterpartyRaw);
             String externalHash = externalHash(budgetId, op.occurredAt(), amount, op.currency(), dir, account.getName(), normalizedCounterparty);
 
             if (transactionRepository.existsByBudgetIdAndExternalHash(budgetId, externalHash)) {
+                skipped++;
+                log.debug(
+                        "import skip duplicate budgetId={} occurredAt={} amount={} {} {} account={} counterparty={} hash={}",
+                        budgetId,
+                        op.occurredAt(),
+                        amount,
+                        op.currency(),
+                        dir,
+                        account.getName(),
+                        normalizedCounterparty,
+                        externalHash
+                );
                 continue;
             }
+
+            log.debug(
+                    "import insert budgetId={} occurredAt={} amount={} {} {} account={} counterparty={}",
+                    budgetId,
+                    op.occurredAt(),
+                    amount,
+                    op.currency(),
+                    dir,
+                    account.getName(),
+                    normalizedCounterparty
+            );
 
             Transaction t = new Transaction();
             t.setBudget(budget);
@@ -140,9 +173,17 @@ public class ImportService {
             t.setAmount(amount);
             t.setCurrency(op.currency());
             t.setAccount(account);
-            t.setCategory(null);
-            t.setCounterpartyRaw(op.counterpartyRaw());
+            t.setCounterpartyRaw(counterpartyRaw);
             t.setCounterpartyNormalized(normalizedCounterparty);
+            if (dir == TransactionDirection.INCOME || dir == TransactionDirection.EXPENSE) {
+                Category category = categoryRuleService.matchTransaction(budgetId, t);
+                if (category == null && dir == TransactionDirection.EXPENSE && categoryService.isMtbankMinskOperation(counterpartyRaw)) {
+                    category = categoryService.ensureMtbankMinskCategory(budgetId);
+                }
+                t.setCategory(category);
+            } else {
+                t.setCategory(null);
+            }
             t.setDescription(op.description());
             t.setSource(TransactionSource.IMPORT);
             t.setExternalHash(externalHash);
@@ -154,13 +195,14 @@ public class ImportService {
             inserted++;
         }
 
-        log.info(
-                "import applied sessionId={} bankCode={} fileType={} inserted={} skippedAsDuplicate={}",
+        log.debug(
+                "import applied sessionId={} bankCode={} fileType={} parsed={} inserted={} skipped={}",
                 saved.getId(),
                 bankCode,
                 fileType,
+                ops.size(),
                 inserted,
-                ops.size() - inserted
+                skipped
         );
 
         saved.setStatus(ImportStatus.APPLIED);

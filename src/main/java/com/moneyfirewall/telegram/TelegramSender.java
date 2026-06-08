@@ -2,6 +2,7 @@ package com.moneyfirewall.telegram;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.stereotype.Component;
+import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
 import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
@@ -39,6 +40,17 @@ public class TelegramSender {
                     .replyMarkup(markup)
                     .build();
             client.execute(msg);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public void answerCallback(String callbackQueryId) {
+        try {
+            AnswerCallbackQuery answer = AnswerCallbackQuery.builder()
+                    .callbackQueryId(callbackQueryId)
+                    .build();
+            client.execute(answer);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }

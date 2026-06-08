@@ -30,4 +30,6 @@ logging:
   level:
     root: INFO
     com.moneyfirewall.importing: DEBUG
+    com.moneyfirewall.service: DEBUG
+    com.moneyfirewall.telegram: DEBUG
 

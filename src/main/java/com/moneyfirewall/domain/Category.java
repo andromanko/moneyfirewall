@@ -26,6 +26,10 @@ public class Category {
     @JoinColumn(name = "budget_id", nullable = false)
     private Budget budget;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "parent_category_id")
+    private Category parentCategory;
+
     @Column(name = "name", nullable = false)
     private String name;
 
@@ -50,6 +54,14 @@ public class Category {
 
     public void setBudget(Budget budget) {
         this.budget = budget;
+    }
+
+    public Category getParentCategory() {
+        return parentCategory;
+    }
+
+    public void setParentCategory(Category parentCategory) {
+        this.parentCategory = parentCategory;
     }
 
     public String getName() {

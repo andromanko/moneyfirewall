@@ -28,6 +28,10 @@ public class SimplePdfStatementParser implements BankStatementParser {
     private static final Pattern MTBANK_TX_START = Pattern.compile("^T\\s+(?<date>\\d{2}\\.\\d{2}\\.\\d{4})$");
     private static final Pattern MTBANK_REG_LINE = Pattern.compile("^(?<t>\\d{2}:\\d{2}:\\d{2})\\s+(?<d2>\\d{2}\\.\\d{2}\\.\\d{4})\\b");
     private static final Pattern CARD_AND_MERCHANT = Pattern.compile("^\\d{4,}\\*{2,}\\d{2,}\\s+(?<m>.+)$");
+    private static final Pattern CARD_GLUED_MERCHANT = Pattern.compile("^\\d{4,}\\*{2,}\\d{2,}(?<m>[A-Za-z].+)$");
+    private static final Pattern CARD_ONLY = Pattern.compile("^\\d{4,}\\*+\\d{2,}$");
+    public static final String MTBANK_MINSK_COUNTERPARTY = "MTBANK MINSK BY";
+    private static final String GOODS_SERVICES_PREFIX = "товаров/услуг ";
     private static final Pattern CURRENCY = Pattern.compile("^[A-Z]{3}$");
     private static final Pattern AMOUNT = Pattern.compile("^\\d+[\\.,]\\d{2}$");
     private static final Pattern SIGN = Pattern.compile("^[+-]$");
@@ -70,22 +74,25 @@ public class SimplePdfStatementParser implements BankStatementParser {
         try (PDDocument doc = Loader.loadPDF(bytes)) {
             PDFTextStripper stripper = new PDFTextStripper();
             String text = stripper.getText(doc);
-            int pages = doc.getNumberOfPages();
-            log.debug("pdf extract pages={} textChars={}", pages, text.length());
-            List<ParsedOperation> mtb = parseMtbank(text);
-            if (!mtb.isEmpty()) {
-                log.debug("pdf branch=MTBank operations={}", mtb.size());
-                return mtb;
-            }
-            List<ParsedOperation> oplati = parseOplati(text);
-            if (!oplati.isEmpty()) {
-                log.debug("pdf branch=OPLATI operations={}", oplati.size());
-                return oplati;
-            }
-            List<ParsedOperation> generic = parseGenericLines(text);
-            log.debug("pdf branch=genericLines operations={}", generic.size());
-            return generic;
+            log.debug("pdf extract pages={} textChars={}", doc.getNumberOfPages(), text.length());
+            return parseExtractedText(text);
         }
+    }
+
+    List<ParsedOperation> parseExtractedText(String text) {
+        List<ParsedOperation> mtb = parseMtbank(text);
+        if (!mtb.isEmpty()) {
+            log.debug("pdf branch=MTBank operations={}", mtb.size());
+            return mtb;
+        }
+        List<ParsedOperation> oplati = parseOplati(text);
+        if (!oplati.isEmpty()) {
+            log.debug("pdf branch=OPLATI operations={}", oplati.size());
+            return oplati;
+        }
+        List<ParsedOperation> generic = parseGenericLines(text);
+        log.debug("pdf branch=genericLines operations={}", generic.size());
+        return generic;
     }
 
     private List<ParsedOperation> parseGenericLines(String text) {
@@ -196,10 +203,13 @@ public class SimplePdfStatementParser implements BankStatementParser {
                 break;
             }
         }
-        String dir = "+".equals(sign) ? "INCOME" : "-".equals(sign) ? "EXPENSE" : "EXPENSE";
-
-        String counterparty = extractMtbankCounterparty(b, currencyIdx);
+        String counterparty = canonicalizeMtbankCounterparty(extractMtbankCounterparty(b, currencyIdx));
         String description = extractMtbankDescription(b, currencyIdx);
+
+        String dir = "+".equals(sign) ? "INCOME" : "-".equals(sign) ? "EXPENSE" : "EXPENSE";
+        if (isMtbankOutgoingTransfer(counterparty, description)) {
+            dir = "EXPENSE";
+        }
 
         LocalDate occDate = date;
         LocalTime occTime = LocalTime.MIDNIGHT;
@@ -232,37 +242,161 @@ public class SimplePdfStatementParser implements BankStatementParser {
         return new BigDecimal(s);
     }
 
+    private boolean isMtbankOutgoingTransfer(String counterparty, String description) {
+        String cp = counterparty == null ? "" : counterparty.trim().toUpperCase(Locale.ROOT);
+        String desc = description == null ? "" : description.toLowerCase(Locale.ROOT);
+        if (cp.startsWith("MP2P") || cp.startsWith("MP2B")) {
+            return true;
+        }
+        return desc.contains("mp2p") || desc.contains("mp2b");
+    }
+
     private String extractMtbankCounterparty(List<String> b, int currencyIdx) {
         int stop = Math.min(currencyIdx, b.size());
-        int startIdx = 1;
+
         for (int i = 0; i < stop; i++) {
-            Matcher m = CARD_AND_MERCHANT.matcher(b.get(i));
+            String line = b.get(i).trim();
+            Matcher glued = CARD_GLUED_MERCHANT.matcher(line);
+            if (glued.matches()) {
+                return appendMtbankMerchantTail(b, i, stop, glued.group("m").trim());
+            }
+            Matcher m = CARD_AND_MERCHANT.matcher(line);
             if (m.matches()) {
-                String first = m.group("m").trim();
-                StringBuilder sb = new StringBuilder(first);
-                for (int j = i + 1; j < stop; j++) {
-                    String l = b.get(j);
-                    if (CURRENCY.matcher(l).matches() || AMOUNT.matcher(l).matches() || MTBANK_TX_START.matcher(l).matches()) {
-                        break;
-                    }
-                    if (looksLikeDescriptionStart(l)) {
-                        break;
-                    }
-                    sb.append(" ").append(l);
-                }
-                return sb.toString().trim();
+                return appendMtbankMerchantTail(b, i, stop, m.group("m").trim());
             }
         }
-        for (int i = startIdx; i < stop; i++) {
-            String l = b.get(i);
-            if (looksLikeDescriptionStart(l) || CURRENCY.matcher(l).matches() || AMOUNT.matcher(l).matches()) {
+
+        for (int i = 1; i < stop; i++) {
+            if (CARD_ONLY.matcher(b.get(i)).matches() && i + 1 < stop) {
+                String next = b.get(i + 1).trim();
+                if (!isMtbankStructuralLine(next) && !looksLikeDescriptionStart(next)) {
+                    return appendMtbankMerchantTail(b, i + 1, stop, next);
+                }
+            }
+        }
+
+        for (int i = 1; i < stop; i++) {
+            String l = b.get(i).trim();
+            if (l.startsWith("MP2P") || l.startsWith("MP2B")) {
+                return l;
+            }
+        }
+
+        List<String> merchantLines = new ArrayList<>();
+        for (int i = 1; i < stop; i++) {
+            String l = b.get(i).trim();
+            if (isMtbankStructuralLine(l)) {
                 continue;
             }
-            if (l.startsWith("MP2P") || l.startsWith("MP2B")) {
-                return l.trim();
+            if (looksLikeDescriptionStart(l)) {
+                if (!merchantLines.isEmpty()) {
+                    break;
+                }
+                String fromDescLine = counterpartyFromMtbankDescriptionLine(l);
+                if (fromDescLine != null) {
+                    return fromDescLine;
+                }
+                continue;
+            }
+            merchantLines.add(l);
+        }
+        if (!merchantLines.isEmpty()) {
+            return String.join(" ", merchantLines).trim();
+        }
+
+        String fromDesc = counterpartyFromMtbankDescription(extractMtbankDescription(b, currencyIdx));
+        if (fromDesc != null) {
+            return fromDesc;
+        }
+
+        return "Imported";
+    }
+
+    public static String canonicalizeMtbankCounterparty(String counterparty) {
+        if (counterparty == null || counterparty.isBlank()) {
+            return counterparty;
+        }
+        String cp = stripMtbankCardPrefix(counterparty.trim());
+        if (cp.toUpperCase(Locale.ROOT).contains("MTBANK MINSK")) {
+            return MTBANK_MINSK_COUNTERPARTY;
+        }
+        return cp;
+    }
+
+    public static String stripMtbankCardPrefix(String line) {
+        Matcher glued = CARD_GLUED_MERCHANT.matcher(line);
+        if (glued.matches()) {
+            return glued.group("m").trim();
+        }
+        Matcher spaced = CARD_AND_MERCHANT.matcher(line);
+        if (spaced.matches()) {
+            return spaced.group("m").trim();
+        }
+        return line;
+    }
+
+    private String appendMtbankMerchantTail(List<String> b, int fromIdx, int stop, String first) {
+        StringBuilder sb = new StringBuilder(first);
+        for (int j = fromIdx + 1; j < stop; j++) {
+            String l = b.get(j);
+            if (isMtbankStructuralLine(l) || looksLikeDescriptionStart(l)) {
+                break;
+            }
+            sb.append(" ").append(l);
+        }
+        return sb.toString().trim();
+    }
+
+    private boolean isMtbankStructuralLine(String l) {
+        if (l == null || l.isBlank()) {
+            return true;
+        }
+        return MTBANK_TX_START.matcher(l).matches()
+                || MTBANK_REG_LINE.matcher(l).matches()
+                || CURRENCY.matcher(l).matches()
+                || AMOUNT.matcher(l).matches()
+                || SIGN.matcher(l).matches()
+                || CARD_ONLY.matcher(l).matches();
+    }
+
+    private String counterpartyFromMtbankDescriptionLine(String line) {
+        return counterpartyFromMtbankDescription(line);
+    }
+
+    private String counterpartyFromMtbankDescription(String description) {
+        if (description == null || description.isBlank()) {
+            return null;
+        }
+        String desc = description.trim();
+        int goodsIdx = desc.toLowerCase(Locale.ROOT).indexOf(GOODS_SERVICES_PREFIX);
+        if (goodsIdx >= 0) {
+            String tail = desc.substring(goodsIdx + GOODS_SERVICES_PREFIX.length()).trim();
+            if (!tail.isBlank()) {
+                return tail;
             }
         }
-        return "Imported";
+        if (desc.startsWith("Оплата ")) {
+            String tail = desc.substring("Оплата ".length()).trim();
+            if (!tail.isBlank() && !tail.startsWith("товаров")) {
+                return tail;
+            }
+        }
+        if (desc.startsWith("Пополнение ")) {
+            String tail = desc.substring("Пополнение ".length()).trim();
+            if (!tail.isBlank()) {
+                return tail;
+            }
+        }
+        if (desc.startsWith("Списание ")) {
+            String tail = desc.substring("Списание ".length()).trim();
+            if (!tail.isBlank()) {
+                return tail;
+            }
+        }
+        if (desc.length() > 2) {
+            return desc;
+        }
+        return null;
     }
 
     private String extractMtbankDescription(List<String> b, int currencyIdx) {

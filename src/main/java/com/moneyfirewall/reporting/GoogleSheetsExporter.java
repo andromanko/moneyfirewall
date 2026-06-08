@@ -9,12 +9,22 @@ import com.google.api.services.sheets.v4.Sheets;
 import com.google.api.services.sheets.v4.SheetsScopes;
 import com.google.api.services.sheets.v4.model.AddSheetRequest;
 import com.google.api.services.sheets.v4.model.BatchUpdateSpreadsheetRequest;
+import com.google.api.services.sheets.v4.model.BooleanCondition;
+import com.google.api.services.sheets.v4.model.Color;
+import com.google.api.services.sheets.v4.model.ConditionalFormatRule;
+import com.google.api.services.sheets.v4.model.DeleteConditionalFormatRuleRequest;
+import com.google.api.services.sheets.v4.model.GridRange;
 import com.google.api.services.sheets.v4.model.Request;
+import com.google.api.services.sheets.v4.model.Sheet;
 import com.google.api.services.sheets.v4.model.SheetProperties;
 import com.google.api.services.sheets.v4.model.Spreadsheet;
 import com.google.api.services.sheets.v4.model.SpreadsheetProperties;
+import com.google.api.services.sheets.v4.model.TextFormat;
+import com.google.api.services.sheets.v4.model.CellFormat;
+import com.google.api.services.sheets.v4.model.AddConditionalFormatRuleRequest;
 import com.google.api.services.sheets.v4.model.ValueRange;
 import com.moneyfirewall.config.MoneyFirewallProperties;
+import com.moneyfirewall.service.ReportService;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -54,6 +64,8 @@ public class GoogleSheetsExporter {
             writeValues(sheets, spreadsheetId, "ByCategory", tables.byCategory());
             writeValues(sheets, spreadsheetId, "ByMember", tables.byMember());
             writeValues(sheets, spreadsheetId, "Transactions", tables.transactions());
+            applyByCategoryFormatting(sheets, spreadsheetId);
+            applyTransactionsFormatting(sheets, spreadsheetId);
 
             return new ExportResult(spreadsheetId, "https://docs.google.com/spreadsheets/d/" + spreadsheetId);
         } catch (Exception e) {
@@ -74,6 +86,98 @@ public class GoogleSheetsExporter {
         if (!req.isEmpty()) {
             sheets.spreadsheets().batchUpdate(spreadsheetId, new BatchUpdateSpreadsheetRequest().setRequests(req)).execute();
         }
+    }
+
+    private void applyByCategoryFormatting(Sheets sheets, String spreadsheetId) throws Exception {
+        Spreadsheet ss = sheets.spreadsheets().get(spreadsheetId).setIncludeGridData(false).execute();
+        Sheet sheet = ss.getSheets().stream()
+                .filter(s -> "ByCategory".equals(s.getProperties().getTitle()))
+                .findFirst()
+                .orElse(null);
+        if (sheet == null) {
+            return;
+        }
+        int sheetId = sheet.getProperties().getSheetId();
+
+        List<Request> req = new ArrayList<>();
+        if (sheet.getConditionalFormats() != null) {
+            for (int i = sheet.getConditionalFormats().size() - 1; i >= 0; i--) {
+                req.add(new Request().setDeleteConditionalFormatRule(
+                        new DeleteConditionalFormatRuleRequest().setSheetId(sheetId).setIndex(i)));
+            }
+        }
+
+        GridRange range = new GridRange()
+                .setSheetId(sheetId)
+                .setStartRowIndex(1)
+                .setStartColumnIndex(0)
+                .setEndColumnIndex(4);
+
+        ConditionalFormatRule subtotal = new ConditionalFormatRule()
+                .setRanges(List.of(range))
+                .setBooleanRule(new com.google.api.services.sheets.v4.model.BooleanRule()
+                        .setCondition(new BooleanCondition()
+                                .setType("CUSTOM_FORMULA")
+                                .setValues(List.of(new com.google.api.services.sheets.v4.model.ConditionValue()
+                                        .setUserEnteredValue("=$C1=\"" + ReportService.BY_CATEGORY_SUBTOTAL + "\""))))
+                        .setFormat(new CellFormat()
+                                .setBackgroundColor(new Color().setRed(0.9f).setGreen(0.9f).setBlue(0.9f))
+                                .setTextFormat(new TextFormat().setBold(true))));
+
+        req.add(new Request().setAddConditionalFormatRule(new AddConditionalFormatRuleRequest().setRule(subtotal).setIndex(0)));
+        sheets.spreadsheets().batchUpdate(spreadsheetId, new BatchUpdateSpreadsheetRequest().setRequests(req)).execute();
+    }
+
+    private void applyTransactionsFormatting(Sheets sheets, String spreadsheetId) throws Exception {
+        Spreadsheet ss = sheets.spreadsheets().get(spreadsheetId).setIncludeGridData(false).execute();
+        Sheet txSheet = ss.getSheets().stream()
+                .filter(s -> "Transactions".equals(s.getProperties().getTitle()))
+                .findFirst()
+                .orElse(null);
+        if (txSheet == null) {
+            return;
+        }
+        int sheetId = txSheet.getProperties().getSheetId();
+
+        List<Request> req = new ArrayList<>();
+        if (txSheet.getConditionalFormats() != null) {
+            for (int i = txSheet.getConditionalFormats().size() - 1; i >= 0; i--) {
+                req.add(new Request().setDeleteConditionalFormatRule(
+                        new DeleteConditionalFormatRuleRequest().setSheetId(sheetId).setIndex(i)));
+            }
+        }
+
+        GridRange range = new GridRange()
+                .setSheetId(sheetId)
+                .setStartRowIndex(1)
+                .setStartColumnIndex(0)
+                .setEndColumnIndex(9);
+
+        ConditionalFormatRule grayText = new ConditionalFormatRule()
+                .setRanges(List.of(range))
+                .setBooleanRule(new com.google.api.services.sheets.v4.model.BooleanRule()
+                        .setCondition(new BooleanCondition()
+                                .setType("CUSTOM_FORMULA")
+                                .setValues(List.of(new com.google.api.services.sheets.v4.model.ConditionValue()
+                                        .setUserEnteredValue("=$I1=TRUE"))))
+                        .setFormat(new CellFormat()
+                                .setTextFormat(new TextFormat()
+                                        .setForegroundColor(new Color().setRed(0.5f).setGreen(0.5f).setBlue(0.5f)))));
+
+        ConditionalFormatRule greenBack = new ConditionalFormatRule()
+                .setRanges(List.of(range))
+                .setBooleanRule(new com.google.api.services.sheets.v4.model.BooleanRule()
+                        .setCondition(new BooleanCondition()
+                                .setType("CUSTOM_FORMULA")
+                                .setValues(List.of(new com.google.api.services.sheets.v4.model.ConditionValue()
+                                        .setUserEnteredValue("=AND($B1=\"INCOME\",$I1<>TRUE)"))))
+                        .setFormat(new CellFormat()
+                                .setBackgroundColor(new Color().setRed(0.8f).setGreen(1.0f).setBlue(0.8f))));
+
+        req.add(new Request().setAddConditionalFormatRule(new AddConditionalFormatRuleRequest().setRule(grayText).setIndex(0)));
+        req.add(new Request().setAddConditionalFormatRule(new AddConditionalFormatRuleRequest().setRule(greenBack).setIndex(1)));
+
+        sheets.spreadsheets().batchUpdate(spreadsheetId, new BatchUpdateSpreadsheetRequest().setRequests(req)).execute();
     }
 
     private void writeValues(Sheets sheets, String spreadsheetId, String sheetName, List<List<Object>> rows) throws Exception {

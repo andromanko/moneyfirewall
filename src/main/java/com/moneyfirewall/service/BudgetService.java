@@ -25,19 +25,22 @@ public class BudgetService {
     private final UserSettingsRepository userSettingsRepository;
     private final UserRepository userRepository;
     private final AccountRepository accountRepository;
+    private final CategoryService categoryService;
 
     public BudgetService(
             BudgetRepository budgetRepository,
             BudgetMemberRepository budgetMemberRepository,
             UserSettingsRepository userSettingsRepository,
             UserRepository userRepository,
-            AccountRepository accountRepository
+            AccountRepository accountRepository,
+            CategoryService categoryService
     ) {
         this.budgetRepository = budgetRepository;
         this.budgetMemberRepository = budgetMemberRepository;
         this.userSettingsRepository = userSettingsRepository;
         this.userRepository = userRepository;
         this.accountRepository = accountRepository;
+        this.categoryService = categoryService;
     }
 
     @Transactional
@@ -57,6 +60,7 @@ public class BudgetService {
 
         setActiveBudget(creator.getId(), savedBudget.getId());
         ensureDefaultAccounts(savedBudget, creator);
+        categoryService.ensureCash(savedBudget.getId());
 
         return savedBudget;
     }
@@ -112,6 +116,13 @@ public class BudgetService {
     @Transactional(readOnly = true)
     public List<BudgetMember> listMembers(UUID budgetId) {
         return budgetMemberRepository.findAllByBudgetId(budgetId);
+    }
+
+    @Transactional
+    public void ensureUserCashAccount(UUID budgetId, UUID userId) {
+        Budget budget = budgetRepository.findById(budgetId).orElseThrow();
+        User user = userRepository.findById(userId).orElseThrow();
+        ensureDefaultAccounts(budget, user);
     }
 
     @Transactional

@@ -88,6 +88,7 @@ public class TransferLinkingService {
                 to
         );
         candidates.sort(Comparator.comparing(Transaction::getOccurredAt));
+        fixMisclassifiedTransferLegs(candidates);
 
         List<Transaction> expenses = candidates.stream().filter(t -> t.getDirection() == TransactionDirection.EXPENSE).toList();
         List<Transaction> incomes = candidates.stream().filter(t -> t.getDirection() == TransactionDirection.INCOME).toList();
@@ -186,9 +187,32 @@ public class TransferLinkingService {
 
     private boolean topupLike(String s) {
         return s.contains("пополн")
+                || s.contains("popoln")
                 || s.contains("кошельк")
                 || s.contains("кошелёк")
-                || s.contains("кошелек");
+                || s.contains("кошелек")
+                || s.contains("debetovoj karti");
+    }
+
+    private void fixMisclassifiedTransferLegs(List<Transaction> candidates) {
+        for (Transaction t : candidates) {
+            if (t.getTransferGroup() != null) {
+                continue;
+            }
+            if (t.getDirection() != TransactionDirection.INCOME) {
+                continue;
+            }
+            if (isOutgoingTransferLike(t)) {
+                t.setDirection(TransactionDirection.EXPENSE);
+                t.setCategory(null);
+                transactionRepository.save(t);
+            }
+        }
+    }
+
+    private boolean isOutgoingTransferLike(Transaction t) {
+        String s = summaryText(t);
+        return s.contains("mp2p") || s.contains("mp2b");
     }
 
     private boolean outLike(String s) {

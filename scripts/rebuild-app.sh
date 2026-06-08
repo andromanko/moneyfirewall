@@ -3,5 +3,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-docker compose build app
-docker compose up -d --force-recreate --no-deps app
+env -u POSTGRES_FINTRACTION_USER -u POSTGRES_FINTRACTION_PASSWORD \
+    -u POSTGRES_FINTRACTION_HOST -u POSTGRES_FINTRACTION_DB -u POSTGRES_FINTRACTION_PORT \
+    -u POSTGRES_USER -u POSTGRES_PASSWORD -u POSTGRES_DB \
+    docker compose --env-file .env build app
+
+env -u POSTGRES_FINTRACTION_USER -u POSTGRES_FINTRACTION_PASSWORD \
+    -u POSTGRES_FINTRACTION_HOST -u POSTGRES_FINTRACTION_DB -u POSTGRES_FINTRACTION_PORT \
+    -u POSTGRES_USER -u POSTGRES_PASSWORD -u POSTGRES_DB \
+    docker compose --env-file .env up -d --force-recreate --no-deps app

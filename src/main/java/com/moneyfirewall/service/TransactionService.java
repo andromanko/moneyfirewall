@@ -59,6 +59,16 @@ public class TransactionService {
     }
 
     @Transactional
+    public Transaction createIncomeByCategoryId(UUID budgetId, UUID userId, Instant occurredAt, BigDecimal amount, String currency, String accountName, UUID categoryId, String counterparty, String description) {
+        return createWithCategoryId(budgetId, userId, occurredAt, amount, currency, accountName, categoryId, counterparty, description, TransactionDirection.INCOME);
+    }
+
+    @Transactional
+    public Transaction createExpenseByCategoryId(UUID budgetId, UUID userId, Instant occurredAt, BigDecimal amount, String currency, String accountName, UUID categoryId, String counterparty, String description) {
+        return createWithCategoryId(budgetId, userId, occurredAt, amount, currency, accountName, categoryId, counterparty, description, TransactionDirection.EXPENSE);
+    }
+
+    @Transactional
     public TransferGroup createTransfer(UUID budgetId, UUID userId, Instant occurredAt, BigDecimal amount, String currency, String fromAccountName, String toAccountName, String description) {
         Budget budget = budgetRepository.findById(budgetId).orElseThrow();
         User user = userRepository.findById(userId).orElseThrow();
@@ -128,6 +138,43 @@ public class TransactionService {
         User user = userRepository.findById(userId).orElseThrow();
         Account account = accountRepository.findByBudgetIdAndName(budgetId, accountName).orElseThrow();
         Category category = categoryService.ensure(budgetId, categoryKind, categoryName);
+
+        Transaction t = new Transaction();
+        t.setBudget(budget);
+        t.setUser(user);
+        t.setDirection(direction);
+        t.setOccurredAt(occurredAt);
+        t.setAmount(amount);
+        t.setCurrency(currency);
+        t.setAccount(account);
+        t.setCategory(category);
+        t.setCounterpartyRaw(counterparty);
+        t.setCounterpartyNormalized(merchantAliasService.normalize(budgetId, counterparty));
+        t.setDescription(description);
+        t.setSource(TransactionSource.MANUAL);
+        t.setExternalHash(null);
+        t.setTransferGroup(null);
+        t.setImportSession(null);
+        t.setCreatedAt(Instant.now());
+        return transactionRepository.save(t);
+    }
+
+    private Transaction createWithCategoryId(
+            UUID budgetId,
+            UUID userId,
+            Instant occurredAt,
+            BigDecimal amount,
+            String currency,
+            String accountName,
+            UUID categoryId,
+            String counterparty,
+            String description,
+            TransactionDirection direction
+    ) {
+        Budget budget = budgetRepository.findById(budgetId).orElseThrow();
+        User user = userRepository.findById(userId).orElseThrow();
+        Account account = accountRepository.findByBudgetIdAndName(budgetId, accountName).orElseThrow();
+        Category category = categoryService.findById(budgetId, categoryId).orElseThrow();
 
         Transaction t = new Transaction();
         t.setBudget(budget);
