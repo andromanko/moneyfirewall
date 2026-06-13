@@ -40,7 +40,7 @@ public class SimplePdfStatementParser implements BankStatementParser {
     private static final Pattern OPLATI_ID = Pattern.compile("^\\d{6,}$");
     private static final Pattern OPLATI_ID_PREFIX = Pattern.compile("^(?<id>\\d{6,})\\b");
     private static final Pattern OPLATI_SUMMARY = Pattern.compile(
-            "^(?<a1>\\d+(?:[\\.,]\\d{1,2})?)\\s+(?<a2>\\d+(?:[\\.,]\\d{1,2})?)\\s+BYN(?:\\s+(?<desc>.*))?$");
+            "^(?<a1>\\d+(?:[\\.,]\\d{1,2})?)\\s+(?<a2>\\d+(?:[\\.,]\\d{1,2})?)\\s+(?<cur>[A-Z]{3})(?:\\s+(?<desc>.*))?$");
     private static final DateTimeFormatter MTBANK_DATE = new DateTimeFormatterBuilder()
             .parseCaseInsensitive()
             .appendPattern("dd.MM.uuuu")
@@ -227,8 +227,7 @@ public class SimplePdfStatementParser implements BankStatementParser {
             }
         }
         Instant occurredAt = occDate.atTime(occTime).toInstant(ZoneOffset.UTC);
-        BigDecimal amountByn = accountAmount.abs();
-        return new ParsedOperation(occurredAt, amountByn, "BYN", dir, "MTBank", counterparty, description);
+        return new ParsedOperation(occurredAt, opAmount.abs(), currency, dir, "MTBank", counterparty, description);
     }
 
     private BigDecimal toAmount(String s) {
@@ -513,6 +512,7 @@ public class SimplePdfStatementParser implements BankStatementParser {
         int summaryIdx = -1;
         String summaryTail = null;
         BigDecimal amount = null;
+        String summaryCurrency = null;
         for (int i = 0; i < b.size(); i++) {
             Matcher sm = OPLATI_SUMMARY.matcher(b.get(i));
             if (!sm.matches()) {
@@ -520,16 +520,19 @@ public class SimplePdfStatementParser implements BankStatementParser {
             }
             summaryIdx = i;
             amount = toAmountFlexible(sm.group("a1"));
+            summaryCurrency = sm.group("cur");
             String desc = sm.group("desc");
             summaryTail = desc == null || desc.isBlank() ? null : desc.trim();
             break;
         }
 
         int currencyIdx = summaryIdx;
+        String currency = summaryCurrency;
         if (amount == null) {
             for (int i = 0; i < b.size(); i++) {
-                if ("BYN".equals(b.get(i))) {
+                if (CURRENCY.matcher(b.get(i)).matches()) {
                     currencyIdx = i;
+                    currency = b.get(i);
                     break;
                 }
             }
@@ -554,6 +557,9 @@ public class SimplePdfStatementParser implements BankStatementParser {
             }
             amount = a2 != null ? a2 : a1;
         }
+        if (currency == null) {
+            currency = "BYN";
+        }
 
         if (amount == null) {
             return null;
@@ -566,7 +572,7 @@ public class SimplePdfStatementParser implements BankStatementParser {
         String counterparty = extractOplatiCounterparty(b, currencyIdx, summaryTail);
         String description = extractOplatiDescription(b, currencyIdx, id, summaryTail);
 
-        return new ParsedOperation(occurredAt, amount.abs(), "BYN", dir, "OPLATI", counterparty, description);
+        return new ParsedOperation(occurredAt, amount.abs(), currency, dir, "OPLATI", counterparty, description);
     }
 
     private boolean looksLikeNumber(String s) {
@@ -602,7 +608,7 @@ public class SimplePdfStatementParser implements BankStatementParser {
             if (AMOUNT.matcher(l).matches() || looksLikeNumber(l)) {
                 continue;
             }
-            if ("BYN".equals(l) || OPLATI_SUMMARY.matcher(l).matches()) {
+            if (CURRENCY.matcher(l).matches() || OPLATI_SUMMARY.matcher(l).matches()) {
                 continue;
             }
             if (sb.length() > 0) {

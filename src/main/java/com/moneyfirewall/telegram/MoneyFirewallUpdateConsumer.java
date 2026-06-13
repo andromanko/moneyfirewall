@@ -484,7 +484,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return;
         }
         conversationService.set(userId, "expense_scan_save", new HashMap<>(st.payload()));
-        sender.sendText(chatId, "Выберите категорию или укажите магазин", receiptSaveMenu());
+        sender.sendText(chatId, "Выберите валюту, категорию или магазин", receiptSaveMenu(st.payload()));
     }
 
     private void onExpenseScanSelectCategory(long chatId, UUID userId) {
@@ -645,6 +645,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             if (total != null) {
                 conversationService.set(userId, "expense_scan_result", new HashMap<>(Map.of(
                         "amount", total,
+                        "currency", extractReceiptCurrency(res.text()),
                         "telegramUserId", telegramUserId,
                         "text", res.text()
                 )));
@@ -1277,7 +1278,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 sender.sendText(chatId, "Ошибка", menuForUser(userId));
                 return true;
             }
-            transactionService.createExpense(budgetId, userId, Instant.now(), amount, "BYN", accountName, "Прочее", shop, null);
+            transactionService.createExpense(budgetId, userId, Instant.now(), amount, currencyFromPayload(st.payload()), accountName, "Прочее", shop, null);
             conversationService.clear(userId);
             sender.sendText(chatId, "✅ Трата добавлена", mainMenu());
             return true;
@@ -1413,6 +1414,12 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return;
         }
 
+        if (data.startsWith("mf:expense_scan_cur:")) {
+            String currency = data.substring("mf:expense_scan_cur:".length()).trim().toUpperCase(Locale.ROOT);
+            onExpenseScanCurrencySelected(chatId, user.getId(), currency);
+            return;
+        }
+
         if (data.startsWith("mf:expense_scan_cat:")) {
             String categoryId = data.substring("mf:expense_scan_cat:".length());
             onExpenseScanCategorySelected(chatId, user.getId(), categoryId);
@@ -1545,10 +1552,9 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         if ("amount".equals(part) && p.length >= 4) {
             payload.put("amount", new BigDecimal(p[3]));
             if ("expense_manual".equals(key)) {
-                payload.put("currency", "BYN");
-                payload.put("step", "counterparty");
+                payload.put("step", "currency");
                 conversationService.set(userId, key, payload);
-                sender.sendText(chatId, "Магазин (опционально)", expenseManualShopMenu(key));
+                sender.sendText(chatId, "Выбери валюту", expenseCurrencyMenu(key));
                 return;
             }
             payload.put("step", "currency");
@@ -1558,6 +1564,12 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         }
         if ("currency".equals(part) && p.length >= 4) {
             payload.put("currency", p[3]);
+            if ("expense_manual".equals(key)) {
+                payload.put("step", "counterparty");
+                conversationService.set(userId, key, payload);
+                sender.sendText(chatId, "Магазин (опционально)", expenseManualShopMenu(key));
+                return;
+            }
             if ("cash_income".equals(key) || "cash_expense".equals(key)) {
                 String accountName = cashAccountName(payload);
                 if (accountName == null) {
@@ -1902,9 +1914,15 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 .build();
     }
 
-    private InlineKeyboardMarkup receiptSaveMenu() {
+    private InlineKeyboardMarkup receiptSaveMenu(Map<String, Object> payload) {
+        String cur = currencyFromPayload(payload);
         return InlineKeyboardMarkup.builder()
                 .keyboard(List.of(
+                        new InlineKeyboardRow(
+                                btn("BYN" + ("BYN".equals(cur) ? " ✓" : ""), "mf:expense_scan_cur:BYN"),
+                                btn("EUR" + ("EUR".equals(cur) ? " ✓" : ""), "mf:expense_scan_cur:EUR"),
+                                btn("USD" + ("USD".equals(cur) ? " ✓" : ""), "mf:expense_scan_cur:USD")
+                        ),
                         new InlineKeyboardRow(btn("📂 Категория", "mf:expense_scan_pick_category")),
                         new InlineKeyboardRow(btn("🏪 Магазин", "mf:expense_scan_pick_shop")),
                         new InlineKeyboardRow(btn("🏠 Меню", "mf:cancel"))
@@ -2486,6 +2504,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
 
     private void saveExpenseManual(UUID budgetId, UUID userId, Map<String, Object> payload, String counterparty) {
         BigDecimal amount = new BigDecimal(payload.get("amount").toString());
+        String currency = currencyFromPayload(payload);
         String accountName = "Cash:" + payload.getOrDefault("telegramUserId", "").toString();
         String categoryId = payload.get("categoryId").toString();
         if ("misc".equals(categoryId)) {
@@ -2494,7 +2513,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                     userId,
                     Instant.now(),
                     amount,
-                    "BYN",
+                    currency,
                     accountName,
                     "Прочее",
                     counterparty,
@@ -2507,12 +2526,34 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 userId,
                 Instant.now(),
                 amount,
-                "BYN",
+                currency,
                 accountName,
                 UUID.fromString(categoryId),
                 counterparty,
                 null
         );
+    }
+
+    private String currencyFromPayload(Map<String, Object> payload) {
+        Object raw = payload.get("currency");
+        if (raw == null || raw.toString().isBlank()) {
+            return "BYN";
+        }
+        return raw.toString().trim().toUpperCase(Locale.ROOT);
+    }
+
+    private String extractReceiptCurrency(String text) {
+        if (text == null || text.isBlank()) {
+            return "BYN";
+        }
+        String u = text.toUpperCase(Locale.ROOT);
+        if (u.contains(" EUR") || u.contains("€") || u.contains("EURO")) {
+            return "EUR";
+        }
+        if (u.contains(" USD") || u.contains("$")) {
+            return "USD";
+        }
+        return "BYN";
     }
 
     private BigDecimal extractReceiptTotal(String text) {
@@ -2546,9 +2587,13 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
     }
 
     private InlineKeyboardMarkup currencyMenu(String key) {
+        return expenseCurrencyMenu(key);
+    }
+
+    private InlineKeyboardMarkup expenseCurrencyMenu(String key) {
         return InlineKeyboardMarkup.builder()
                 .keyboard(List.of(
-                        new InlineKeyboardRow(btn("BYN", "wiz:currency:" + key + ":BYN"), btn("USD", "wiz:currency:" + key + ":USD"), btn("EUR", "wiz:currency:" + key + ":EUR")),
+                        new InlineKeyboardRow(btn("BYN", "wiz:currency:" + key + ":BYN"), btn("EUR", "wiz:currency:" + key + ":EUR"), btn("USD", "wiz:currency:" + key + ":USD")),
                         new InlineKeyboardRow(btn("Отмена", "wiz:confirm:" + key + ":cancel"))
                 ))
                 .build();
@@ -2769,12 +2814,24 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return;
         }
         if ("misc".equals(categoryId)) {
-            transactionService.createExpense(budgetId, userId, Instant.now(), amount, "BYN", accountName, "Прочее", null, null);
+            transactionService.createExpense(budgetId, userId, Instant.now(), amount, currencyFromPayload(st.payload()), accountName, "Прочее", null, null);
         } else {
-            transactionService.createExpenseByCategoryId(budgetId, userId, Instant.now(), amount, "BYN", accountName, UUID.fromString(categoryId), null, null);
+            transactionService.createExpenseByCategoryId(budgetId, userId, Instant.now(), amount, currencyFromPayload(st.payload()), accountName, UUID.fromString(categoryId), null, null);
         }
         conversationService.clear(userId);
         sender.sendText(chatId, "✅ Трата добавлена", mainMenu());
+    }
+
+    private void onExpenseScanCurrencySelected(long chatId, UUID userId, String currency) {
+        State st = conversationService.get(userId).orElse(null);
+        if (st == null || !"expense_scan_save".equals(st.key())) {
+            sender.sendText(chatId, "Нет данных чека", menuForUser(userId));
+            return;
+        }
+        Map<String, Object> p = new HashMap<>(st.payload());
+        p.put("currency", currency);
+        conversationService.set(userId, "expense_scan_save", p);
+        sender.sendText(chatId, "Валюта: " + currency, receiptSaveMenu(p));
     }
 
 }

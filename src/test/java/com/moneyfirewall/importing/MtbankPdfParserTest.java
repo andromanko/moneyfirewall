@@ -102,4 +102,25 @@ class MtbankPdfParserTest {
         assertTrue(ops.getFirst().counterpartyRaw().contains("Santa"));
         assertFalse("Imported".equals(ops.getFirst().counterpartyRaw()));
     }
+
+    @Test
+    void parseMtbankEurTransaction() throws Exception {
+        String text = """
+                ЗАО «МТБанк»
+                Выписка по счету
+                T 03.06.2026
+                12:00:00 03.06.2026
+                SHOP EUROPE
+                Оплата товаров/услуг
+                EUR
+                15.50
+                1000.00
+                -
+                """;
+        List<ParsedOperation> ops = new SimplePdfStatementParser().parseExtractedText(text);
+        assertEquals(1, ops.size());
+        assertEquals("EUR", ops.getFirst().currency());
+        assertEquals("15.50", ops.getFirst().amount().toPlainString());
+        assertEquals("EXPENSE", ops.getFirst().direction());
+    }
 }
