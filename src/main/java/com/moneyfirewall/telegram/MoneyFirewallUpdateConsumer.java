@@ -37,6 +37,7 @@ import java.util.List;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -1023,6 +1024,15 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         runReport(chatId, userId, from, to, label);
     }
 
+    private String formatByCurrency(Map<String, BigDecimal> byCurrency) {
+        if (byCurrency.isEmpty()) {
+            return "0";
+        }
+        return byCurrency.entrySet().stream()
+                .map(e -> e.getValue().toPlainString() + " " + e.getKey())
+                .collect(java.util.stream.Collectors.joining(", "));
+    }
+
     private void onReportManualStart(long chatId, UUID userId) {
         if (budgetService.getActiveBudgetId(userId) == null) {
             sender.sendText(chatId, "Сначала выбери бюджет: /budget_use <uuid>");
@@ -1042,29 +1052,30 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         int nicknamed = merchantAliasService.reapplyNicknames(budgetId, from, to);
         ReportTables tables = reportService.build(budgetId, from, to);
 
-        BigDecimal income = BigDecimal.ZERO;
-        BigDecimal expense = BigDecimal.ZERO;
+        Map<String, BigDecimal> incomeByCurrency = new TreeMap<>();
+        Map<String, BigDecimal> expenseByCurrency = new TreeMap<>();
         for (List<Object> row : tables.summary()) {
-            if (row == null || row.size() < 2) {
+            if (row == null || row.size() < 3) {
                 continue;
             }
-            Object metricObj = row.getFirst();
-            Object valueObj = row.get(1);
-            if (!(metricObj instanceof String metric)) {
+            Object metricObj = row.get(0);
+            Object currencyObj = row.get(1);
+            Object valueObj = row.get(2);
+            if (!(metricObj instanceof String metric) || !(currencyObj instanceof String currency)) {
                 continue;
             }
             if (!(valueObj instanceof BigDecimal val)) {
                 continue;
             }
             if ("income".equals(metric)) {
-                income = val;
+                incomeByCurrency.put(currency, val);
             } else if ("expense".equals(metric)) {
-                expense = val;
+                expenseByCurrency.put(currency, val);
             }
         }
         sender.sendText(chatId, "Предпросмотр " + label + "\n" +
-                "Доход: " + income.toPlainString() + "\n" +
-                "Расход: " + expense.toPlainString() +
+                "Доход: " + formatByCurrency(incomeByCurrency) + "\n" +
+                "Расход: " + formatByCurrency(expenseByCurrency) +
                 (recategorized > 0 ? "\nКатегории проставлены: " + recategorized : "") +
                 (nicknamed > 0 ? "\nНикнеймы обновлены: " + nicknamed : ""));
 

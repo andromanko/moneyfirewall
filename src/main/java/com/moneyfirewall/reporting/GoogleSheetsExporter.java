@@ -7,12 +7,14 @@ import com.google.api.client.json.JsonFactory;
 import com.google.api.client.json.jackson2.JacksonFactory;
 import com.google.api.services.sheets.v4.Sheets;
 import com.google.api.services.sheets.v4.SheetsScopes;
+import com.google.api.services.sheets.v4.model.AddDimensionGroupRequest;
 import com.google.api.services.sheets.v4.model.AddSheetRequest;
 import com.google.api.services.sheets.v4.model.BatchUpdateSpreadsheetRequest;
 import com.google.api.services.sheets.v4.model.BooleanCondition;
 import com.google.api.services.sheets.v4.model.Color;
 import com.google.api.services.sheets.v4.model.ConditionalFormatRule;
 import com.google.api.services.sheets.v4.model.DeleteConditionalFormatRuleRequest;
+import com.google.api.services.sheets.v4.model.DimensionRange;
 import com.google.api.services.sheets.v4.model.GridRange;
 import com.google.api.services.sheets.v4.model.Request;
 import com.google.api.services.sheets.v4.model.Sheet;
@@ -64,7 +66,7 @@ public class GoogleSheetsExporter {
             writeValues(sheets, spreadsheetId, "ByCategory", tables.byCategory());
             writeValues(sheets, spreadsheetId, "ByMember", tables.byMember());
             writeValues(sheets, spreadsheetId, "Transactions", tables.transactions());
-            applyByCategoryFormatting(sheets, spreadsheetId);
+            applyByCategoryFormatting(sheets, spreadsheetId, tables.byCategory());
             applyTransactionsFormatting(sheets, spreadsheetId);
 
             return new ExportResult(spreadsheetId, "https://docs.google.com/spreadsheets/d/" + spreadsheetId);
@@ -88,7 +90,7 @@ public class GoogleSheetsExporter {
         }
     }
 
-    private void applyByCategoryFormatting(Sheets sheets, String spreadsheetId) throws Exception {
+    private void applyByCategoryFormatting(Sheets sheets, String spreadsheetId, List<List<Object>> byCategoryRows) throws Exception {
         Spreadsheet ss = sheets.spreadsheets().get(spreadsheetId).setIncludeGridData(false).execute();
         Sheet sheet = ss.getSheets().stream()
                 .filter(s -> "ByCategory".equals(s.getProperties().getTitle()))
@@ -111,7 +113,7 @@ public class GoogleSheetsExporter {
                 .setSheetId(sheetId)
                 .setStartRowIndex(1)
                 .setStartColumnIndex(0)
-                .setEndColumnIndex(4);
+                .setEndColumnIndex(5);
 
         ConditionalFormatRule subtotal = new ConditionalFormatRule()
                 .setRanges(List.of(range))
@@ -119,13 +121,42 @@ public class GoogleSheetsExporter {
                         .setCondition(new BooleanCondition()
                                 .setType("CUSTOM_FORMULA")
                                 .setValues(List.of(new com.google.api.services.sheets.v4.model.ConditionValue()
-                                        .setUserEnteredValue("=$C1=\"" + ReportService.BY_CATEGORY_SUBTOTAL + "\""))))
+                                        .setUserEnteredValue("=$D1=\"" + ReportService.BY_CATEGORY_SUBTOTAL + "\""))))
                         .setFormat(new CellFormat()
                                 .setBackgroundColor(new Color().setRed(0.9f).setGreen(0.9f).setBlue(0.9f))
                                 .setTextFormat(new TextFormat().setBold(true))));
 
+        ConditionalFormatRule subSubtotal = new ConditionalFormatRule()
+                .setRanges(List.of(range))
+                .setBooleanRule(new com.google.api.services.sheets.v4.model.BooleanRule()
+                        .setCondition(new BooleanCondition()
+                                .setType("CUSTOM_FORMULA")
+                                .setValues(List.of(new com.google.api.services.sheets.v4.model.ConditionValue()
+                                        .setUserEnteredValue("=$D1=\"" + ReportService.BY_SUBCATEGORY_SUBTOTAL + "\""))))
+                        .setFormat(new CellFormat()
+                                .setBackgroundColor(new Color().setRed(0.96f).setGreen(0.96f).setBlue(0.96f))
+                                .setTextFormat(new TextFormat().setItalic(true))));
+
         req.add(new Request().setAddConditionalFormatRule(new AddConditionalFormatRuleRequest().setRule(subtotal).setIndex(0)));
+        req.add(new Request().setAddConditionalFormatRule(new AddConditionalFormatRuleRequest().setRule(subSubtotal).setIndex(1)));
+        req.addAll(byCategoryGroupingRequests(sheetId, byCategoryRows));
         sheets.spreadsheets().batchUpdate(spreadsheetId, new BatchUpdateSpreadsheetRequest().setRequests(req)).execute();
+    }
+
+    private List<Request> byCategoryGroupingRequests(int sheetId, List<List<Object>> byCategoryRows) {
+        List<ReportService.RowRange> ranges = ReportService.computeByCategoryOutline(byCategoryRows);
+        List<Request> req = new ArrayList<>();
+        for (int level = 1; level <= 2; level++) {
+            int finalLevel = level;
+            ranges.stream().filter(r -> r.level() == finalLevel).forEach(r -> req.add(new Request()
+                    .setAddDimensionGroup(new AddDimensionGroupRequest()
+                            .setRange(new DimensionRange()
+                                    .setSheetId(sheetId)
+                                    .setDimension("ROWS")
+                                    .setStartIndex(r.startRow())
+                                    .setEndIndex(r.endRowInclusive() + 1)))));
+        }
+        return req;
     }
 
     private void applyTransactionsFormatting(Sheets sheets, String spreadsheetId) throws Exception {

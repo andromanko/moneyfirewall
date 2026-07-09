@@ -18,7 +18,9 @@ public class ExcelReportExporter {
     public byte[] export(ReportTables t) {
         try (XSSFWorkbook wb = new XSSFWorkbook()) {
             writeSheet(wb.createSheet("Summary"), t.summary(), null);
-            writeSheet(wb.createSheet("ByCategory"), t.byCategory(), byCategoryRowStyle(wb, t.byCategory()));
+            XSSFSheet byCategorySheet = wb.createSheet("ByCategory");
+            writeSheet(byCategorySheet, t.byCategory(), byCategoryRowStyle(wb, t.byCategory()));
+            applyByCategoryGrouping(byCategorySheet, t.byCategory());
             writeSheet(wb.createSheet("ByMember"), t.byMember(), null);
             writeSheet(wb.createSheet("Transactions"), t.transactions(), transactionsRowStyle(wb, t.transactions()));
             ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -27,6 +29,14 @@ public class ExcelReportExporter {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private void applyByCategoryGrouping(XSSFSheet sheet, List<List<Object>> rows) {
+        List<ReportService.RowRange> ranges = ReportService.computeByCategoryOutline(rows);
+        ranges.stream().filter(r -> r.level() == 1)
+                .forEach(r -> sheet.groupRow(r.startRow(), r.endRowInclusive()));
+        ranges.stream().filter(r -> r.level() == 2)
+                .forEach(r -> sheet.groupRow(r.startRow(), r.endRowInclusive()));
     }
 
     private void writeSheet(XSSFSheet sheet, List<List<Object>> rows, RowStyle rowStyle) {
@@ -75,9 +85,21 @@ public class ExcelReportExporter {
         bold.setBold(true);
         subtotal.setFont(bold);
 
+        CellStyle subSubtotal = wb.createCellStyle();
+        Font italic = wb.createFont();
+        italic.setItalic(true);
+        subSubtotal.setFont(italic);
+
         return cols -> {
             Object nickname = nicknameIdx < cols.size() ? cols.get(nicknameIdx) : null;
-            return ReportService.BY_CATEGORY_SUBTOTAL.equals(String.valueOf(nickname)) ? subtotal : null;
+            String nn = String.valueOf(nickname);
+            if (ReportService.BY_CATEGORY_SUBTOTAL.equals(nn)) {
+                return subtotal;
+            }
+            if (ReportService.BY_SUBCATEGORY_SUBTOTAL.equals(nn)) {
+                return subSubtotal;
+            }
+            return null;
         };
     }
 
