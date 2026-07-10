@@ -25,6 +25,8 @@ import com.moneyfirewall.reporting.ExcelReportExporter;
 import com.moneyfirewall.reporting.GoogleSheetsExporter;
 import com.moneyfirewall.reporting.ReportTables;
 import com.moneyfirewall.service.UserService;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -78,6 +80,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
     private final GoogleSheetsExporter googleSheetsExporter;
     private final ReceiptRecognitionService receiptRecognitionService;
     private final BuildInfoService buildInfoService;
+    private final ObjectMapper objectMapper;
 
     public MoneyFirewallUpdateConsumer(
             TelegramSender sender,
@@ -98,7 +101,8 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             ExcelReportExporter excelReportExporter,
             GoogleSheetsExporter googleSheetsExporter,
             ReceiptRecognitionService receiptRecognitionService,
-            BuildInfoService buildInfoService
+            BuildInfoService buildInfoService,
+            ObjectMapper objectMapper
     ) {
         this.sender = sender;
         this.userService = userService;
@@ -119,6 +123,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         this.googleSheetsExporter = googleSheetsExporter;
         this.receiptRecognitionService = receiptRecognitionService;
         this.buildInfoService = buildInfoService;
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -151,6 +156,9 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
 
         if (update.getMessage().getDocument() != null) {
             if (handleImportDocument(chatId, user.getId(), update)) {
+                return;
+            }
+            if (handleCategoriesImportDocument(chatId, user.getId(), update)) {
                 return;
             }
             sender.sendText(chatId, "Сначала /import <bankCode>");
@@ -1527,6 +1535,8 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             case "mf:catrules:add" -> onCategoryRulesAddStart(chatId, user.getId());
             case "mf:catrules:list" -> onCategoryRulesList(chatId, user.getId());
             case "mf:catrules:add_newcat" -> onCategoryRuleAddNewCategory(chatId, user.getId());
+            case "mf:cat_export" -> onCategoriesExport(chatId, user.getId());
+            case "mf:cat_import" -> onCategoriesImportStart(chatId, user.getId());
             case "mf:aliases" -> onNicknamesMenu(chatId, user.getId());
             case "mf:aliases:add" -> onNicknamesAddStart(chatId, user.getId());
             case "mf:aliases:list" -> onNicknamesList(chatId, user.getId());
@@ -2044,7 +2054,16 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 .keyboard(List.of(
                         new InlineKeyboardRow(btn("➕ Добавить правило", "mf:catrules:add")),
                         new InlineKeyboardRow(btn("📋 Список правил", "mf:catrules:list")),
+                        new InlineKeyboardRow(btn("📤 Экспорт категорий", "mf:cat_export"), btn("📥 Импорт категорий", "mf:cat_import")),
                         new InlineKeyboardRow(btn("⬅️ Меню", "mf:cancel"))
+                ))
+                .build();
+    }
+
+    private InlineKeyboardMarkup catImportPendingMenu() {
+        return InlineKeyboardMarkup.builder()
+                .keyboard(List.of(
+                        new InlineKeyboardRow(btn("✖️ Отмена", "mf:cancel"))
                 ))
                 .build();
     }
@@ -2201,6 +2220,65 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
 
     private void onCategoryRulesMenu(long chatId, UUID userId) {
         sender.sendText(chatId, "Категории: правила автопроставления", catRulesMenu());
+    }
+
+    private void onCategoriesExport(long chatId, UUID userId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет: /budget_use <uuid>", menuForUser(userId));
+            return;
+        }
+        List<CategoryService.CategoryTransferEntry> entries = categoryService.exportAll(budgetId);
+        try {
+            byte[] bytes = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(entries);
+            sender.sendDocument(chatId, bytes, "categories.json", "Категории: " + entries.size() + " (с подкатегориями)");
+        } catch (Exception e) {
+            log.warn("categories export failed budgetId={}", budgetId, e);
+            sender.sendText(chatId, "Не удалось сформировать файл", menuForUser(userId));
+        }
+    }
+
+    private void onCategoriesImportStart(long chatId, UUID userId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет: /budget_use <uuid>", menuForUser(userId));
+            return;
+        }
+        if (!budgetService.isAdmin(budgetId, userId)) {
+            sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+            return;
+        }
+        conversationService.set(userId, "cat_import", new HashMap<>());
+        sender.sendText(chatId, "Пришли JSON-файл с категориями (как из экспорта). Совпадающие по имени категории и подкатегории будут пропущены.", catImportPendingMenu());
+    }
+
+    private boolean handleCategoriesImportDocument(long chatId, UUID userId, Update update) {
+        State st = conversationService.get(userId).orElse(null);
+        if (st == null || !"cat_import".equals(st.key())) {
+            return false;
+        }
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            conversationService.clear(userId);
+            sender.sendText(chatId, "Сначала выбери бюджет: /budget_use <uuid>", menuForUser(userId));
+            return true;
+        }
+        String fileId = update.getMessage().getDocument().getFileId();
+        String fileName = update.getMessage().getDocument().getFileName();
+        try {
+            byte[] bytes = telegramFileService.downloadByFileId(fileId);
+            List<CategoryService.CategoryTransferEntry> entries = objectMapper.readValue(
+                    bytes, new TypeReference<List<CategoryService.CategoryTransferEntry>>() {
+                    });
+            CategoryService.CategoryImportResult result = categoryService.importAll(budgetId, entries);
+            conversationService.clear(userId);
+            sender.sendText(chatId, "Импорт категорий: создано " + result.created() + ", пропущено (уже было) " + result.skipped(), menuForUser(userId));
+        } catch (Exception e) {
+            conversationService.clear(userId);
+            log.warn("categories import failed budgetId={} fileName={}", budgetId, fileName, e);
+            sender.sendText(chatId, "Не удалось разобрать файл. Ожидается JSON как из экспорта.", menuForUser(userId));
+        }
+        return true;
     }
 
     private void onCategoryRulesAddStart(long chatId, UUID userId) {

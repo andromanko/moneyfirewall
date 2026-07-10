@@ -8,6 +8,7 @@ import com.moneyfirewall.repo.BudgetRepository;
 import com.moneyfirewall.repo.CategoryRepository;
 import com.moneyfirewall.repo.TransactionRepository;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -166,6 +167,73 @@ public class CategoryService {
             return c.getName();
         }
         return c.getParentCategory().getName() + " / " + c.getName();
+    }
+
+    @Transactional(readOnly = true)
+    public List<CategoryTransferEntry> exportAll(UUID budgetId) {
+        List<CategoryTransferEntry> result = new ArrayList<>();
+        for (CategoryKind kind : CategoryKind.values()) {
+            for (Category parent : listParents(budgetId, kind)) {
+                if (isCash(parent)) {
+                    continue;
+                }
+                List<String> children = listChildren(budgetId, kind, parent.getId()).stream()
+                        .map(Category::getName)
+                        .toList();
+                result.add(new CategoryTransferEntry(kind.name(), parent.getName(), children));
+            }
+        }
+        return result;
+    }
+
+    @Transactional
+    public CategoryImportResult importAll(UUID budgetId, List<CategoryTransferEntry> entries) {
+        int created = 0;
+        int skipped = 0;
+        for (CategoryTransferEntry entry : entries) {
+            if (entry == null || entry.name() == null || entry.name().isBlank() || entry.kind() == null) {
+                continue;
+            }
+            CategoryKind kind;
+            try {
+                kind = CategoryKind.valueOf(entry.kind().trim().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException e) {
+                continue;
+            }
+
+            boolean parentExisted = categoryRepository.findParentByBudgetIdAndKindAndName(budgetId, kind, entry.name()).isPresent();
+            Category parent = ensure(budgetId, kind, entry.name());
+            if (parentExisted) {
+                skipped++;
+            } else {
+                created++;
+            }
+
+            if (entry.children() == null) {
+                continue;
+            }
+            for (String child : entry.children()) {
+                if (child == null || child.isBlank()) {
+                    continue;
+                }
+                boolean childExisted = categoryRepository
+                        .findChildByBudgetIdAndKindAndParentIdAndName(budgetId, kind, parent.getId(), child)
+                        .isPresent();
+                ensureChild(budgetId, kind, entry.name(), child);
+                if (childExisted) {
+                    skipped++;
+                } else {
+                    created++;
+                }
+            }
+        }
+        return new CategoryImportResult(created, skipped);
+    }
+
+    public record CategoryTransferEntry(String kind, String name, List<String> children) {
+    }
+
+    public record CategoryImportResult(int created, int skipped) {
     }
 
     @Transactional(readOnly = true)
