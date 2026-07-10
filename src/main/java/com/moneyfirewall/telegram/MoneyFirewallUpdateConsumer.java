@@ -25,7 +25,6 @@ import com.moneyfirewall.reporting.ExcelReportExporter;
 import com.moneyfirewall.reporting.GoogleSheetsExporter;
 import com.moneyfirewall.reporting.ReportTables;
 import com.moneyfirewall.service.UserService;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -2228,10 +2227,12 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             sender.sendText(chatId, "Сначала выбери бюджет: /budget_use <uuid>", menuForUser(userId));
             return;
         }
-        List<CategoryService.CategoryTransferEntry> entries = categoryService.exportAll(budgetId);
+        List<CategoryService.CategoryTransferEntry> categories = categoryService.exportAll(budgetId);
+        List<CategoryRuleService.CategoryRuleTransferEntry> rules = categoryRuleService.exportAll(budgetId);
         try {
-            byte[] bytes = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(entries);
-            sender.sendDocument(chatId, bytes, "categories.json", "Категории: " + entries.size() + " (с подкатегориями)");
+            byte[] bytes = objectMapper.writerWithDefaultPrettyPrinter()
+                    .writeValueAsBytes(new CategoryBundleExport(categories, rules));
+            sender.sendDocument(chatId, bytes, "categories.json", "Категории: " + categories.size() + ", правила: " + rules.size());
         } catch (Exception e) {
             log.warn("categories export failed budgetId={}", budgetId, e);
             sender.sendText(chatId, "Не удалось сформировать файл", menuForUser(userId));
@@ -2249,7 +2250,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return;
         }
         conversationService.set(userId, "cat_import", new HashMap<>());
-        sender.sendText(chatId, "Пришли JSON-файл с категориями (как из экспорта). Совпадающие по имени категории и подкатегории будут пропущены.", catImportPendingMenu());
+        sender.sendText(chatId, "Пришли JSON-файл с категориями и правилами (как из экспорта). Совпадающее будет пропущено.", catImportPendingMenu());
     }
 
     private boolean handleCategoriesImportDocument(long chatId, UUID userId, Update update) {
@@ -2267,18 +2268,28 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         String fileName = update.getMessage().getDocument().getFileName();
         try {
             byte[] bytes = telegramFileService.downloadByFileId(fileId);
-            List<CategoryService.CategoryTransferEntry> entries = objectMapper.readValue(
-                    bytes, new TypeReference<List<CategoryService.CategoryTransferEntry>>() {
-                    });
-            CategoryService.CategoryImportResult result = categoryService.importAll(budgetId, entries);
+            CategoryBundleExport bundle = objectMapper.readValue(bytes, CategoryBundleExport.class);
+            List<CategoryService.CategoryTransferEntry> categories = bundle.categories() == null ? List.of() : bundle.categories();
+            List<CategoryRuleService.CategoryRuleTransferEntry> rules = bundle.rules() == null ? List.of() : bundle.rules();
+
+            CategoryService.CategoryImportResult catResult = categoryService.importAll(budgetId, categories);
+            CategoryRuleService.CategoryRuleImportResult ruleResult = categoryRuleService.importAll(budgetId, rules);
+
             conversationService.clear(userId);
-            sender.sendText(chatId, "Импорт категорий: создано " + result.created() + ", пропущено (уже было) " + result.skipped(), menuForUser(userId));
+            sender.sendText(chatId, "Категории: создано " + catResult.created() + ", пропущено " + catResult.skipped()
+                    + "\nПравила: создано " + ruleResult.created() + ", пропущено " + ruleResult.skipped(), menuForUser(userId));
         } catch (Exception e) {
             conversationService.clear(userId);
             log.warn("categories import failed budgetId={} fileName={}", budgetId, fileName, e);
             sender.sendText(chatId, "Не удалось разобрать файл. Ожидается JSON как из экспорта.", menuForUser(userId));
         }
         return true;
+    }
+
+    private record CategoryBundleExport(
+            List<CategoryService.CategoryTransferEntry> categories,
+            List<CategoryRuleService.CategoryRuleTransferEntry> rules
+    ) {
     }
 
     private void onCategoryRulesAddStart(long chatId, UUID userId) {

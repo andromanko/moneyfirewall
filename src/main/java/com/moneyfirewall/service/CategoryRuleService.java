@@ -13,10 +13,12 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.YearMonth;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -298,5 +300,121 @@ public class CategoryRuleService {
             return null;
         }
         return s.trim();
+    }
+
+    @Transactional(readOnly = true)
+    public List<CategoryRuleTransferEntry> exportAll(UUID budgetId) {
+        List<CategoryRuleTransferEntry> result = new ArrayList<>();
+        for (CategoryRule r : list(budgetId)) {
+            Category c = r.getCategory();
+            if (c == null) {
+                continue;
+            }
+            result.add(new CategoryRuleTransferEntry(
+                    c.getKind().name(),
+                    categoryPath(c),
+                    r.getPattern(),
+                    r.isRegex(),
+                    r.getPriority(),
+                    r.getAccountName(),
+                    r.getMinAmount(),
+                    r.getExactAmount(),
+                    r.isOncePerMonth()
+            ));
+        }
+        return result;
+    }
+
+    @Transactional
+    public CategoryRuleImportResult importAll(UUID budgetId, List<CategoryRuleTransferEntry> entries) {
+        int created = 0;
+        int skipped = 0;
+        List<CategoryRule> existing = new ArrayList<>(list(budgetId));
+        for (CategoryRuleTransferEntry entry : entries) {
+            if (entry == null || entry.category() == null || entry.category().isBlank() || entry.kind() == null) {
+                continue;
+            }
+            CategoryKind kind;
+            try {
+                kind = CategoryKind.valueOf(entry.kind().trim().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException e) {
+                continue;
+            }
+            CategoryRuleConditions conditions = new CategoryRuleConditions(
+                    entry.pattern() == null ? "" : entry.pattern(),
+                    entry.accountName(),
+                    entry.minAmount(),
+                    entry.exactAmount(),
+                    entry.oncePerMonth(),
+                    entry.priority()
+            );
+            if (!conditions.hasConstraints()) {
+                skipped++;
+                continue;
+            }
+            boolean duplicate = existing.stream().anyMatch(r -> sameRule(r, kind, entry.category(), entry.isRegex(), conditions));
+            if (duplicate) {
+                skipped++;
+                continue;
+            }
+            CategoryRule saved = add(budgetId, kind, entry.category(), conditions, entry.isRegex());
+            existing.add(saved);
+            created++;
+        }
+        return new CategoryRuleImportResult(created, skipped);
+    }
+
+    private boolean sameRule(CategoryRule r, CategoryKind kind, String categoryPath, boolean isRegex, CategoryRuleConditions c) {
+        Category cat = r.getCategory();
+        if (cat == null || cat.getKind() != kind) {
+            return false;
+        }
+        if (!categoryPath(cat).equalsIgnoreCase(categoryPath.trim())) {
+            return false;
+        }
+        if (r.isRegex() != isRegex) {
+            return false;
+        }
+        if (!nullToEmpty(r.getPattern()).trim().equalsIgnoreCase(nullToEmpty(c.pattern()).trim())) {
+            return false;
+        }
+        if (!Objects.equals(blankToNull(r.getAccountName()), blankToNull(c.accountName()))) {
+            return false;
+        }
+        if (!amountsEqual(r.getMinAmount(), c.minAmount()) || !amountsEqual(r.getExactAmount(), c.exactAmount())) {
+            return false;
+        }
+        return r.isOncePerMonth() == c.oncePerMonth();
+    }
+
+    private boolean amountsEqual(BigDecimal a, BigDecimal b) {
+        if (a == null || b == null) {
+            return a == b;
+        }
+        return a.compareTo(b) == 0;
+    }
+
+    private String nullToEmpty(String s) {
+        return s == null ? "" : s;
+    }
+
+    private String categoryPath(Category c) {
+        return c.getParentCategory() == null ? c.getName() : c.getParentCategory().getName() + " / " + c.getName();
+    }
+
+    public record CategoryRuleTransferEntry(
+            String kind,
+            String category,
+            String pattern,
+            boolean isRegex,
+            int priority,
+            String accountName,
+            BigDecimal minAmount,
+            BigDecimal exactAmount,
+            boolean oncePerMonth
+    ) {
+    }
+
+    public record CategoryRuleImportResult(int created, int skipped) {
     }
 }

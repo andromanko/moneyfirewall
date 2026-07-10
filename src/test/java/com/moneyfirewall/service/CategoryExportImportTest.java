@@ -40,6 +40,37 @@ class CategoryExportImportTest {
     @Autowired
     CategoryService categoryService;
 
+    @Autowired
+    CategoryRuleService categoryRuleService;
+
+    @Test
+    void exportsRulesAndImportSkipsExisting() {
+        User user = userService.getOrCreate(333L, 333L, "u3");
+        Budget budget = budgetService.createBudget(user.getId(), "b4");
+
+        categoryRuleService.add(
+                budget.getId(), CategoryKind.EXPENSE, "Продукты / Магазины",
+                new CategoryRuleConditions("евроопт", null, null, null, false, 100), false);
+
+        List<CategoryRuleService.CategoryRuleTransferEntry> exported = categoryRuleService.exportAll(budget.getId());
+        Assertions.assertEquals(1, exported.size());
+        Assertions.assertEquals("Продукты / Магазины", exported.get(0).category());
+        Assertions.assertEquals("евроопт", exported.get(0).pattern());
+
+        CategoryRuleService.CategoryRuleImportResult resultSame = categoryRuleService.importAll(budget.getId(), exported);
+        Assertions.assertEquals(0, resultSame.created());
+        Assertions.assertEquals(1, resultSame.skipped());
+
+        Budget other = budgetService.createBudget(user.getId(), "b5");
+        CategoryRuleService.CategoryRuleImportResult firstImport = categoryRuleService.importAll(other.getId(), exported);
+        Assertions.assertEquals(1, firstImport.created());
+        Assertions.assertEquals(0, firstImport.skipped());
+
+        CategoryRuleService.CategoryRuleImportResult secondImport = categoryRuleService.importAll(other.getId(), exported);
+        Assertions.assertEquals(0, secondImport.created());
+        Assertions.assertEquals(1, secondImport.skipped());
+    }
+
     @Test
     void exportsTreeAndImportSkipsExisting() {
         User user = userService.getOrCreate(222L, 222L, "u2");
