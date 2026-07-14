@@ -128,7 +128,13 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
     @Override
     public void consume(java.util.List<Update> updates) {
         for (Update update : updates) {
-            consumeOne(update);
+            try {
+                consumeOne(update);
+            } catch (Exception e) {
+                // BotSession's poller only catches TelegramApiException around this call; anything else
+                // escaping here silently cancels the scheduled long-polling task forever (no log, no crash).
+                log.error("Unhandled exception processing updateId={}", update.getUpdateId(), e);
+            }
         }
     }
 
@@ -562,7 +568,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         conversationService.set(userId, "import", new HashMap<>(Map.of("bank", bank)));
         String hint = switch (bank.toLowerCase(Locale.ROOT)) {
             case "alfajson" -> "Пришли JSON (экспорт Альфа-Банка, поле items).";
-            case "mtbank" -> "Пришли PDF-выписку МТБанка.";
+            case "mtbank" -> "Пришли PDF-выписку МТБанка или JSON-выгрузку операций.";
             case "oplati" -> "Пришли PDF-выписку ОПЛАТИ / Белинвестбанк.";
             default -> "Пришли PDF или JSON в общем формате.";
         };
