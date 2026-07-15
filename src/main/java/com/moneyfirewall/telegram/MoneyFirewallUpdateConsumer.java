@@ -2020,7 +2020,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
     private InlineKeyboardMarkup importBankMenu() {
         return InlineKeyboardMarkup.builder()
                 .keyboard(List.of(
-                        new InlineKeyboardRow(btn("PDF — МТБанк", "mf:import:set:mtbank")),
+                        new InlineKeyboardRow(btn("PDF / JSON — МТБанк", "mf:import:set:mtbank")),
                         new InlineKeyboardRow(btn("PDF — ОПЛАТИ / Белинвест", "mf:import:set:oplati")),
                         new InlineKeyboardRow(btn("PDF / JSON — универсально", "mf:import:set:generic")),
                         new InlineKeyboardRow(btn("JSON — Альфа-Банк", "mf:import:set:AlfaJson")),
