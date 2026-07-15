@@ -62,10 +62,13 @@ public class GoogleSheetsExporter {
 
             ensureSheets(sheets, spreadsheetId, List.of("Summary", "ByCategory", "ByMember", "Transactions"));
 
-            writeValues(sheets, spreadsheetId, "Summary", tables.summary());
-            writeValues(sheets, spreadsheetId, "ByCategory", tables.byCategory());
-            writeValues(sheets, spreadsheetId, "ByMember", tables.byMember());
-            writeValues(sheets, spreadsheetId, "Transactions", tables.transactions());
+            // Summary/ByCategory now contain FormulaCell values that must be parsed as formulas
+            // (USER_ENTERED); the other sheets hold plain data and stay RAW so nothing in them
+            // (e.g. ISO timestamps) gets auto-reinterpreted by Sheets.
+            writeValues(sheets, spreadsheetId, "Summary", tables.summary(), "USER_ENTERED");
+            writeValues(sheets, spreadsheetId, "ByCategory", tables.byCategory(), "USER_ENTERED");
+            writeValues(sheets, spreadsheetId, "ByMember", tables.byMember(), "RAW");
+            writeValues(sheets, spreadsheetId, "Transactions", tables.transactions(), "RAW");
             applyByCategoryFormatting(sheets, spreadsheetId, tables.byCategory());
             applyTransactionsFormatting(sheets, spreadsheetId);
 
@@ -211,12 +214,18 @@ public class GoogleSheetsExporter {
         sheets.spreadsheets().batchUpdate(spreadsheetId, new BatchUpdateSpreadsheetRequest().setRequests(req)).execute();
     }
 
-    private void writeValues(Sheets sheets, String spreadsheetId, String sheetName, List<List<Object>> rows) throws Exception {
-        List<List<Object>> safe = rows.stream().map(r -> r.stream().map(v -> v == null ? "" : v).toList()).toList();
+    private void writeValues(Sheets sheets, String spreadsheetId, String sheetName, List<List<Object>> rows, String valueInputOption) throws Exception {
+        List<List<Object>> safe = rows.stream()
+                .map(r -> r.stream().<Object>map(v -> switch (v) {
+                    case null -> "";
+                    case FormulaCell f -> "=" + f.expression();
+                    default -> v;
+                }).toList())
+                .toList();
         ValueRange vr = new ValueRange().setValues(new ArrayList<>(safe));
         sheets.spreadsheets().values()
                 .update(spreadsheetId, sheetName + "!A1", vr)
-                .setValueInputOption("RAW")
+                .setValueInputOption(valueInputOption)
                 .execute();
     }
 

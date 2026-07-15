@@ -5,6 +5,7 @@ import com.moneyfirewall.domain.CategoryKind;
 import com.moneyfirewall.domain.Transaction;
 import com.moneyfirewall.domain.TransactionDirection;
 import com.moneyfirewall.repo.TransactionRepository;
+import com.moneyfirewall.reporting.FormulaCell;
 import com.moneyfirewall.reporting.ReportTables;
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -13,6 +14,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
@@ -23,6 +25,11 @@ import org.springframework.transaction.annotation.Transactional;
 public class ReportService {
     public static final String BY_CATEGORY_SUBTOTAL = "ИТОГО";
     public static final String BY_SUBCATEGORY_SUBTOTAL = "Подытог";
+    private static final String FEE_CATEGORY_NAME = "Комиссии";
+    private static final String FEE_NICKNAME = "FEE";
+    /** Bounded row count used for cross-sheet SUMIFS/SUMPRODUCT ranges instead of whole-column
+     * references, which POI's formula evaluator would otherwise try to materialize in full. */
+    private static final int TX_DATA_LAST_ROW = 100_000;
 
     private final TransactionRepository transactionRepository;
     private final CategoryService categoryService;
@@ -68,7 +75,7 @@ public class ReportService {
                 } else if (t.getDirection() == TransactionDirection.EXPENSE) {
                     if (!categoryService.isCash(category)) {
                         expenseByCurrency.merge(currency, t.getAmount(), BigDecimal::add);
-                        if ("Комиссии".equalsIgnoreCase(cols.category()) || "FEE".equalsIgnoreCase(cp)) {
+                        if (FEE_CATEGORY_NAME.equalsIgnoreCase(cols.category()) || FEE_NICKNAME.equalsIgnoreCase(cp)) {
                             feesByCurrency.merge(currency, t.getAmount(), BigDecimal::add);
                         }
                         String nicknameKey = cp.isBlank() ? "" : cp;
@@ -106,10 +113,10 @@ public class ReportService {
                 .sorted(Map.Entry.comparingByValue(Comparator.reverseOrder()))
                 .forEach(e -> memberRows.add(List.of(e.getKey(), e.getValue())));
 
-        return new ReportTables(summary, catRows, memberRows, txRows);
+        return new ReportTables(summary, catRows, memberRows, txRows, incomeByCurrency, expenseByCurrency);
     }
 
-    private List<List<Object>> buildSummarySheet(
+    static List<List<Object>> buildSummarySheet(
             Map<String, BigDecimal> incomeByCurrency,
             Map<String, BigDecimal> expenseByCurrency,
             Map<String, BigDecimal> feesByCurrency,
@@ -123,13 +130,12 @@ public class ReportService {
         currencies.addAll(expenseByCurrency.keySet());
         currencies.addAll(feesByCurrency.keySet());
         for (String currency : currencies) {
-            BigDecimal income = incomeByCurrency.getOrDefault(currency, BigDecimal.ZERO);
-            BigDecimal expense = expenseByCurrency.getOrDefault(currency, BigDecimal.ZERO);
-            BigDecimal fees = feesByCurrency.getOrDefault(currency, BigDecimal.ZERO);
-            summary.add(List.of("income", currency, income));
-            summary.add(List.of("expense", currency, expense));
-            summary.add(List.of("net", currency, income.subtract(expense)));
-            summary.add(List.of("fees", currency, fees));
+            int incomeRow = summary.size() + 1;
+            summary.add(List.of("income", currency, incomeFormula(currency)));
+            int expenseRow = summary.size() + 1;
+            summary.add(List.of("expense", currency, expenseFormula(currency)));
+            summary.add(List.of("net", currency, new FormulaCell("C" + incomeRow + "-C" + expenseRow)));
+            summary.add(List.of("fees", currency, feesFormula(currency)));
         }
 
         summary.add(List.of());
@@ -143,12 +149,52 @@ public class ReportService {
                         e.getKey().category(),
                         e.getKey().subcategory(),
                         e.getKey().currency(),
-                        e.getValue()
+                        categoryExpenseFormula(e.getKey().category(), e.getKey().subcategory(), e.getKey().currency())
                 )));
         return summary;
     }
 
-    private List<List<Object>> buildByCategorySheet(Map<CategoryKey, BigDecimal> amounts) {
+    private static String txRange(String column) {
+        return "Transactions!" + column + "2:" + column + TX_DATA_LAST_ROW;
+    }
+
+    private static String escapeFormulaString(String s) {
+        return s == null ? "" : s.replace("\"", "\"\"");
+    }
+
+    private static FormulaCell incomeFormula(String currency) {
+        return new FormulaCell("SUMIFS(" + txRange("C") + "," + txRange("B") + ",\"INCOME\","
+                + txRange("D") + ",\"" + escapeFormulaString(currency) + "\"," + txRange("J") + ",FALSE)");
+    }
+
+    private static FormulaCell expenseFormula(String currency) {
+        return new FormulaCell("SUMIFS(" + txRange("C") + "," + txRange("B") + ",\"EXPENSE\","
+                + txRange("D") + ",\"" + escapeFormulaString(currency) + "\"," + txRange("J") + ",FALSE,"
+                + txRange("F") + ",\"<>CASH\")");
+    }
+
+    private static FormulaCell feesFormula(String currency) {
+        // Two SUMIFS added together instead of one SUMPRODUCT-with-OR: POI's SUMPRODUCT chokes on
+        // mixing a boolean-literal range comparison (isTransfer=FALSE) into the array arithmetic.
+        // The two conditions (fee category vs. fee nickname) are mutually exclusive by construction
+        // (a transaction's category can't be both "Комиссии" and "<>Комиссии"), so no double-counting.
+        String byCategory = "SUMIFS(" + txRange("C") + "," + txRange("B") + ",\"EXPENSE\","
+                + txRange("D") + ",\"" + escapeFormulaString(currency) + "\"," + txRange("J") + ",FALSE,"
+                + txRange("F") + ",\"" + escapeFormulaString(FEE_CATEGORY_NAME) + "\")";
+        String byNickname = "SUMIFS(" + txRange("C") + "," + txRange("B") + ",\"EXPENSE\","
+                + txRange("D") + ",\"" + escapeFormulaString(currency) + "\"," + txRange("J") + ",FALSE,"
+                + txRange("F") + ",\"<>" + escapeFormulaString(FEE_CATEGORY_NAME) + "\","
+                + txRange("H") + ",\"" + FEE_NICKNAME + "\")";
+        return new FormulaCell(byCategory + "+" + byNickname);
+    }
+
+    private static FormulaCell categoryExpenseFormula(String category, String subcategory, String currency) {
+        return new FormulaCell("SUMIFS(" + txRange("C") + "," + txRange("F") + ",\"" + escapeFormulaString(category)
+                + "\"," + txRange("G") + ",\"" + escapeFormulaString(subcategory) + "\"," + txRange("D") + ",\""
+                + escapeFormulaString(currency) + "\"," + txRange("B") + ",\"EXPENSE\"," + txRange("J") + ",FALSE)");
+    }
+
+    static List<List<Object>> buildByCategorySheet(Map<CategoryKey, BigDecimal> amounts) {
         List<List<Object>> catRows = new ArrayList<>();
         catRows.add(List.of("category", "subcategory", "currency", "nickname", "amount"));
 
@@ -162,8 +208,10 @@ public class ReportService {
 
         String currentCategory = null;
         String currentSubcategory = null;
-        Map<String, BigDecimal> subcategoryTotals = new TreeMap<>();
-        Map<String, BigDecimal> categoryTotals = new TreeMap<>();
+        int categoryBlockStart = 1;
+        int subcategoryBlockStart = 1;
+        Set<String> subcategoryCurrencies = new TreeSet<>();
+        Set<String> categoryCurrencies = new TreeSet<>();
 
         for (Map.Entry<CategoryKey, BigDecimal> e : sorted) {
             String category = e.getKey().category();
@@ -175,44 +223,75 @@ public class ReportService {
                     && (categoryChanged || !currentSubcategory.equals(subcategory));
 
             if (subcategoryChanged) {
-                flushSubcategoryTotals(catRows, currentCategory, currentSubcategory, subcategoryTotals);
+                flushSubcategoryFormulas(catRows, currentCategory, currentSubcategory, subcategoryBlockStart, catRows.size() - 1, subcategoryCurrencies);
+                subcategoryCurrencies.clear();
             }
             if (categoryChanged) {
-                flushCategoryTotals(catRows, currentCategory, categoryTotals);
+                flushCategoryFormulas(catRows, currentCategory, categoryBlockStart, catRows.size() - 1, categoryCurrencies);
+                categoryCurrencies.clear();
+            }
+            if (subcategoryChanged || currentSubcategory == null) {
+                subcategoryBlockStart = catRows.size();
+            }
+            if (categoryChanged || currentCategory == null) {
+                categoryBlockStart = catRows.size();
             }
 
             currentCategory = category;
             currentSubcategory = subcategory;
-            subcategoryTotals.merge(currency, e.getValue(), BigDecimal::add);
-            categoryTotals.merge(currency, e.getValue(), BigDecimal::add);
+            subcategoryCurrencies.add(currency);
+            categoryCurrencies.add(currency);
 
             catRows.add(List.of(category, subcategory, currency, e.getKey().nickname(), e.getValue()));
         }
         if (currentCategory != null) {
-            flushSubcategoryTotals(catRows, currentCategory, currentSubcategory, subcategoryTotals);
-            flushCategoryTotals(catRows, currentCategory, categoryTotals);
+            flushSubcategoryFormulas(catRows, currentCategory, currentSubcategory, subcategoryBlockStart, catRows.size() - 1, subcategoryCurrencies);
+            flushCategoryFormulas(catRows, currentCategory, categoryBlockStart, catRows.size() - 1, categoryCurrencies);
         }
 
         return catRows;
     }
 
-    private void flushSubcategoryTotals(
+    /** Row indices below are 0-based positions in {@code catRows} (header at index 0); spreadsheet row = index + 1. */
+    private static void flushSubcategoryFormulas(
             List<List<Object>> catRows,
             String category,
             String subcategory,
-            Map<String, BigDecimal> totals
+            int startRow,
+            int endRow,
+            Set<String> currencies
     ) {
-        if (!subcategory.isBlank()) {
-            totals.forEach((currency, total) ->
-                    catRows.add(List.of(category, subcategory, currency, BY_SUBCATEGORY_SUBTOTAL, total)));
+        if (subcategory == null || subcategory.isBlank() || currencies.isEmpty()) {
+            return;
         }
-        totals.clear();
+        for (String currency : currencies) {
+            String range = "C" + (startRow + 1) + ":C" + (endRow + 1);
+            String amountRange = "E" + (startRow + 1) + ":E" + (endRow + 1);
+            String formula = "SUMIFS(" + amountRange + "," + range + ",\"" + escapeFormulaString(currency) + "\")";
+            catRows.add(List.of(category, subcategory, currency, BY_SUBCATEGORY_SUBTOTAL, new FormulaCell(formula)));
+        }
     }
 
-    private void flushCategoryTotals(List<List<Object>> catRows, String category, Map<String, BigDecimal> totals) {
-        totals.forEach((currency, total) ->
-                catRows.add(List.of(category, "", currency, BY_CATEGORY_SUBTOTAL, total)));
-        totals.clear();
+    private static void flushCategoryFormulas(
+            List<List<Object>> catRows,
+            String category,
+            int startRow,
+            int endRow,
+            Set<String> currencies
+    ) {
+        if (currencies.isEmpty()) {
+            return;
+        }
+        for (String currency : currencies) {
+            String currencyRange = "C" + (startRow + 1) + ":C" + (endRow + 1);
+            String nicknameRange = "D" + (startRow + 1) + ":D" + (endRow + 1);
+            String amountRange = "E" + (startRow + 1) + ":E" + (endRow + 1);
+            String formula = "SUMIFS(" + amountRange
+                    + "," + currencyRange + ",\"" + escapeFormulaString(currency) + "\""
+                    + "," + nicknameRange + ",\"<>" + escapeFormulaString(BY_SUBCATEGORY_SUBTOTAL) + "\""
+                    + "," + nicknameRange + ",\"<>" + escapeFormulaString(BY_CATEGORY_SUBTOTAL) + "\")";
+            catRows.add(List.of(category, "", currency, BY_CATEGORY_SUBTOTAL, new FormulaCell(formula)));
+        }
     }
 
     /**
@@ -275,10 +354,10 @@ public class ReportService {
     private record CategoryColumns(String category, String subcategory) {
     }
 
-    private record CategorySlot(String category, String subcategory, String currency) {
+    record CategorySlot(String category, String subcategory, String currency) {
     }
 
-    private record CategoryKey(String category, String subcategory, String currency, String nickname) {
+    record CategoryKey(String category, String subcategory, String currency, String nickname) {
     }
 
     public record RowRange(int startRow, int endRowInclusive, int level) {

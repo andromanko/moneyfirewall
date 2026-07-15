@@ -17,17 +17,40 @@ import org.springframework.stereotype.Component;
 public class ExcelReportExporter {
     public byte[] export(ReportTables t) {
         try (XSSFWorkbook wb = new XSSFWorkbook()) {
-            writeSheet(wb.createSheet("Summary"), t.summary(), null);
+            XSSFSheet summarySheet = wb.createSheet("Summary");
+            writeSheet(summarySheet, t.summary(), null);
+
             XSSFSheet byCategorySheet = wb.createSheet("ByCategory");
             writeSheet(byCategorySheet, t.byCategory(), byCategoryRowStyle(wb, t.byCategory()));
             applyByCategoryGrouping(byCategorySheet, t.byCategory());
-            writeSheet(wb.createSheet("ByMember"), t.byMember(), null);
-            writeSheet(wb.createSheet("Transactions"), t.transactions(), transactionsRowStyle(wb, t.transactions()));
+
+            XSSFSheet byMemberSheet = wb.createSheet("ByMember");
+            writeSheet(byMemberSheet, t.byMember(), null);
+
+            XSSFSheet transactionsSheet = wb.createSheet("Transactions");
+            writeSheet(transactionsSheet, t.transactions(), transactionsRowStyle(wb, t.transactions()));
+
+            // Formulas (Summary metrics/category breakdown, ByCategory subtotals) reference other
+            // sheets/ranges, so evaluate only once every sheet is populated, and autosize afterwards
+            // so column widths reflect computed values rather than raw formula text.
+            wb.getCreationHelper().createFormulaEvaluator().evaluateAll();
+            autoSizeColumns(summarySheet, t.summary());
+            autoSizeColumns(byCategorySheet, t.byCategory());
+            autoSizeColumns(byMemberSheet, t.byMember());
+            autoSizeColumns(transactionsSheet, t.transactions());
+
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             wb.write(out);
             return out.toByteArray();
         } catch (Exception e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    private void autoSizeColumns(XSSFSheet sheet, List<List<Object>> rows) {
+        int max = rows.stream().mapToInt(List::size).max().orElse(0);
+        for (int i = 0; i < max; i++) {
+            sheet.autoSizeColumn(i);
         }
     }
 
@@ -48,6 +71,10 @@ public class ExcelReportExporter {
                 Object v = cols.get(c);
                 if (v == null) {
                     cell.setBlank();
+                } else if (v instanceof FormulaCell f) {
+                    cell.setCellFormula(f.expression());
+                } else if (v instanceof Boolean bool) {
+                    cell.setCellValue(bool);
                 } else if (v instanceof Number n) {
                     cell.setCellValue(n.doubleValue());
                 } else {
@@ -62,10 +89,6 @@ public class ExcelReportExporter {
                     }
                 }
             }
-        }
-        int max = rows.stream().mapToInt(java.util.List::size).max().orElse(0);
-        for (int i = 0; i < max; i++) {
-            sheet.autoSizeColumn(i);
         }
     }
 

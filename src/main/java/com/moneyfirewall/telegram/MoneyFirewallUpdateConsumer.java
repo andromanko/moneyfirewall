@@ -38,7 +38,6 @@ import java.util.List;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
-import java.util.TreeMap;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -1065,30 +1064,9 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         int nicknamed = merchantAliasService.reapplyNicknames(budgetId, from, to);
         ReportTables tables = reportService.build(budgetId, from, to);
 
-        Map<String, BigDecimal> incomeByCurrency = new TreeMap<>();
-        Map<String, BigDecimal> expenseByCurrency = new TreeMap<>();
-        for (List<Object> row : tables.summary()) {
-            if (row == null || row.size() < 3) {
-                continue;
-            }
-            Object metricObj = row.get(0);
-            Object currencyObj = row.get(1);
-            Object valueObj = row.get(2);
-            if (!(metricObj instanceof String metric) || !(currencyObj instanceof String currency)) {
-                continue;
-            }
-            if (!(valueObj instanceof BigDecimal val)) {
-                continue;
-            }
-            if ("income".equals(metric)) {
-                incomeByCurrency.put(currency, val);
-            } else if ("expense".equals(metric)) {
-                expenseByCurrency.put(currency, val);
-            }
-        }
         sender.sendText(chatId, "Предпросмотр " + label + "\n" +
-                "Доход: " + formatByCurrency(incomeByCurrency) + "\n" +
-                "Расход: " + formatByCurrency(expenseByCurrency) +
+                "Доход: " + formatByCurrency(tables.incomeByCurrency()) + "\n" +
+                "Расход: " + formatByCurrency(tables.expenseByCurrency()) +
                 (recategorized > 0 ? "\nКатегории проставлены: " + recategorized : "") +
                 (nicknamed > 0 ? "\nНикнеймы обновлены: " + nicknamed : ""));
 
