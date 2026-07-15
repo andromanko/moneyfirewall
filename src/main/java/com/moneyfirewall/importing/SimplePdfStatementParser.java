@@ -565,12 +565,15 @@ public class SimplePdfStatementParser implements BankStatementParser {
             return null;
         }
 
-        String joined = String.join(" ", b);
-        String jl = joined.toLowerCase(Locale.ROOT);
-        String dir = (jl.contains("пополн") || jl.contains("поступ") || jl.contains("приход")) ? "INCOME" : "EXPENSE";
-
         String counterparty = extractOplatiCounterparty(b, currencyIdx, summaryTail);
         String description = extractOplatiDescription(b, currencyIdx, id, summaryTail);
+
+        // Direction comes strictly from the "Тип платежа" column (captured in `description`), not
+        // from the whole row: the "Детали операции" text for an outgoing ЕРИП payment often reads
+        // "Пополнение дебетовой карты/счета ..." (topping up a DIFFERENT account), which used to be
+        // misread as this wallet receiving money.
+        String paymentType = description == null ? "" : description.trim().toLowerCase(Locale.ROOT);
+        String dir = paymentType.startsWith("пополн") ? "INCOME" : "EXPENSE";
 
         return new ParsedOperation(occurredAt, amount.abs(), currency, dir, "OPLATI", counterparty, description);
     }
@@ -599,22 +602,31 @@ public class SimplePdfStatementParser implements BankStatementParser {
         StringBuilder sb = new StringBuilder();
         for (int i = start; i < currencyIdx; i++) {
             String l = b.get(i);
-            if (OPLATI_TIME.matcher(l).matches() || OPLATI_ID.matcher(l).matches()) {
+            if (OPLATI_TIME.matcher(l).matches()) {
                 continue;
             }
+            // The id and the first word of "Тип платежа" are often glued onto one PDF text line
+            // (e.g. "496316234 Оплата"); strip just the id prefix instead of dropping the whole line,
+            // otherwise "Оплата"/"Пополнение" is lost and direction detection has nothing to go on.
+            String rest = l;
             if (id != null && l.startsWith(id)) {
+                rest = l.substring(id.length()).trim();
+            } else if (OPLATI_ID.matcher(l).matches()) {
                 continue;
             }
-            if (AMOUNT.matcher(l).matches() || looksLikeNumber(l)) {
+            if (rest.isBlank()) {
                 continue;
             }
-            if (CURRENCY.matcher(l).matches() || OPLATI_SUMMARY.matcher(l).matches()) {
+            if (AMOUNT.matcher(rest).matches() || looksLikeNumber(rest)) {
+                continue;
+            }
+            if (CURRENCY.matcher(rest).matches() || OPLATI_SUMMARY.matcher(rest).matches()) {
                 continue;
             }
             if (sb.length() > 0) {
                 sb.append(" ");
             }
-            sb.append(l);
+            sb.append(rest);
         }
         String s = sb.toString().replaceAll("\\s+", " ").trim();
         return s.isBlank() ? null : s;
