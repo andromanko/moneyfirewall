@@ -23,6 +23,9 @@ public class Budget {
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
+    @Column(name = "default_currency", nullable = false)
+    private String defaultCurrency = "BYN";
+
     public UUID getId() {
         return id;
     }
@@ -45,6 +48,14 @@ public class Budget {
 
     public void setCreatedAt(Instant createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public String getDefaultCurrency() {
+        return defaultCurrency;
+    }
+
+    public void setDefaultCurrency(String defaultCurrency) {
+        this.defaultCurrency = defaultCurrency;
     }
 }
 

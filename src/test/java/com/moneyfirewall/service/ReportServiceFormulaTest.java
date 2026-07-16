@@ -1,9 +1,12 @@
 package com.moneyfirewall.service;
 
+import com.moneyfirewall.reporting.ColoredCell;
 import com.moneyfirewall.reporting.ExcelReportExporter;
+import com.moneyfirewall.reporting.FormulaCell;
 import com.moneyfirewall.reporting.ReportTables;
 import java.io.ByteArrayInputStream;
 import java.math.BigDecimal;
+import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -19,154 +22,181 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * End-to-end check that Summary/ByCategory are now live formulas computed from the Transactions
- * sheet (SUMIFS/SUMPRODUCT), not literal Java-computed numbers. Builds a small workbook with
- * ExcelReportExporter, reopens the saved bytes, and reads the cached formula results POI evaluated
- * before writing — this exercises the exact artifact a user would download, not just formula text.
+ * End-to-end check of the month-pivoted, single-currency Summary sheet: builds a Transactions
+ * sheet by hand (mirroring what ReportService.build() would emit, including yellow/green
+ * currency-converted cells), runs it through ExcelReportExporter, reopens the saved bytes, and
+ * reads the cached formula results POI evaluated before writing.
  */
 class ReportServiceFormulaTest {
     @Test
-    void summaryAndByCategoryFormulasEvaluateToCorrectTotals() throws Exception {
+    void monthlySummaryFormulasEvaluateToCorrectTotals() throws Exception {
         List<List<Object>> transactions = new ArrayList<>();
-        transactions.add(List.of("occurredAt", "direction", "amount", "currency", "account", "category", "subcategory", "nickname", "member", "isTransfer"));
-        transactions.add(txRow("2026-01-01T00:00:00Z", "EXPENSE", "100", "BYN", "Alfa", "Продукты", "Магазины", "Евроопт", "Andrey", false));
-        transactions.add(txRow("2026-01-02T00:00:00Z", "EXPENSE", "50", "BYN", "Alfa", "Продукты", "Магазины", "Санта", "Andrey", false));
-        transactions.add(txRow("2026-01-03T00:00:00Z", "INCOME", "1000", "BYN", "Alfa", "", "", "Salary", "Andrey", false));
-        transactions.add(txRow("2026-01-04T00:00:00Z", "EXPENSE", "20", "BYN", "Cash", "CASH", "", "", "Andrey", false));
-        transactions.add(txRow("2026-01-05T00:00:00Z", "EXPENSE", "200", "BYN", "Alfa", "Транспорт", "", "Такси", "Andrey", false));
-        transactions.add(txRow("2026-01-06T00:00:00Z", "EXPENSE", "30", "BYN", "Alfa", "Комиссии", "", "Bank fee", "Andrey", false));
-        transactions.add(txRow("2026-01-07T00:00:00Z", "EXPENSE", "5", "EUR", "Alfa", "Продукты", "Магазины", "Евроопт", "Andrey", false));
-        transactions.add(txRow("2026-01-08T00:00:00Z", "EXPENSE", "999", "BYN", "Alfa", "Продукты", "Магазины", "Евроопт", "Andrey", true));
-        transactions.add(txRow("2026-01-09T00:00:00Z", "EXPENSE", "15", "BYN", "Alfa", "Транспорт", "", "FEE", "Andrey", false));
+        transactions.add(List.of("Дата и время", "Тип", "Сумма", "Валюта", "Курс НБРБ", "Сумма в BYN",
+                "Счёт", "Категория", "Подкатегория", "Контрагент", "Участник", "Месяц"));
 
-        Map<String, BigDecimal> incomeByCurrency = new LinkedHashMap<>(Map.of("BYN", new BigDecimal("1000")));
-        Map<String, BigDecimal> expenseByCurrency = new LinkedHashMap<>(Map.of(
-                "BYN", new BigDecimal("395"),
-                "EUR", new BigDecimal("5")
-        ));
-        Map<String, BigDecimal> feesByCurrency = new LinkedHashMap<>(Map.of("BYN", new BigDecimal("45")));
+        // January: regular BYN expense/income, a CASH expense (excluded), a yellow (rate) foreign
+        // expense, a green (balance-diff) foreign expense, two fee variants, and a transfer.
+        transactions.add(txRow("2026-01-01T00:00:00Z", "Расход", "100", "BYN", "", new BigDecimal("100"),
+                "Alfa", "Продукты", "Магазины", "Евроопт", "Andrey", "2026-01"));
+        transactions.add(txRow("2026-01-02T00:00:00Z", "Доход", "1000", "BYN", "", new BigDecimal("1000"),
+                "Alfa", "", "", "Salary", "Andrey", "2026-01"));
+        transactions.add(txRow("2026-01-03T00:00:00Z", "Расход", "20", "BYN", "", new BigDecimal("20"),
+                "Cash", "CASH", "", "", "Andrey", "2026-01"));
+        transactions.add(txRow("2026-01-04T00:00:00Z", "Расход", "10", "EUR",
+                new ColoredCell(new BigDecimal("3.5"), ColoredCell.Color.YELLOW),
+                new ColoredCell(new FormulaCell("C5*E5"), ColoredCell.Color.YELLOW),
+                "Alfa", "Продукты", "Магазины", "Евроопт", "Andrey", "2026-01"));
+        transactions.add(txRow("2026-01-05T00:00:00Z", "Расход", "18", "USD", "",
+                new ColoredCell(new BigDecimal("50"), ColoredCell.Color.GREEN),
+                "Alfa", "Транспорт", "", "Такси", "Andrey", "2026-01"));
+        transactions.add(txRow("2026-01-06T00:00:00Z", "Расход", "30", "BYN", "", new BigDecimal("30"),
+                "Alfa", "Комиссии", "", "Bank fee", "Andrey", "2026-01"));
+        transactions.add(txRow("2026-01-07T00:00:00Z", "Расход", "15", "BYN", "", new BigDecimal("15"),
+                "Alfa", "Транспорт", "", "FEE", "Andrey", "2026-01"));
+        transactions.add(txRow("2026-01-08T00:00:00Z", "Перевод", "999", "BYN", "", new BigDecimal("999"),
+                "Alfa", "", "", "", "Andrey", "2026-01"));
 
-        Map<ReportService.CategorySlot, BigDecimal> byCategoryTotal = new LinkedHashMap<>();
-        byCategoryTotal.put(new ReportService.CategorySlot("Продукты", "Магазины", "BYN"), new BigDecimal("150"));
-        byCategoryTotal.put(new ReportService.CategorySlot("Продукты", "Магазины", "EUR"), new BigDecimal("5"));
-        byCategoryTotal.put(new ReportService.CategorySlot("Транспорт", "", "BYN"), new BigDecimal("215"));
-        byCategoryTotal.put(new ReportService.CategorySlot("Комиссии", "", "BYN"), new BigDecimal("30"));
+        // February: one expense, one income, to prove months don't bleed into each other.
+        transactions.add(txRow("2026-02-01T00:00:00Z", "Расход", "200", "BYN", "", new BigDecimal("200"),
+                "Alfa", "Продукты", "Магазины", "Евроопт", "Andrey", "2026-02"));
+        transactions.add(txRow("2026-02-02T00:00:00Z", "Доход", "500", "BYN", "", new BigDecimal("500"),
+                "Alfa", "", "", "Salary", "Andrey", "2026-02"));
 
-        Map<ReportService.CategoryKey, BigDecimal> byCategoryAndCounterparty = new LinkedHashMap<>();
-        byCategoryAndCounterparty.put(new ReportService.CategoryKey("Продукты", "Магазины", "BYN", "Евроопт"), new BigDecimal("100"));
-        byCategoryAndCounterparty.put(new ReportService.CategoryKey("Продукты", "Магазины", "BYN", "Санта"), new BigDecimal("50"));
-        byCategoryAndCounterparty.put(new ReportService.CategoryKey("Продукты", "Магазины", "EUR", "Евроопт"), new BigDecimal("5"));
-        byCategoryAndCounterparty.put(new ReportService.CategoryKey("Транспорт", "", "BYN", "Такси"), new BigDecimal("200"));
-        byCategoryAndCounterparty.put(new ReportService.CategoryKey("Транспорт", "", "BYN", "FEE"), new BigDecimal("15"));
-        byCategoryAndCounterparty.put(new ReportService.CategoryKey("Комиссии", "", "BYN", "Bank fee"), new BigDecimal("30"));
+        List<YearMonth> months = List.of(YearMonth.of(2026, 1), YearMonth.of(2026, 2));
+        Map<ReportService.CategoryPair, BigDecimal> categoryConvertedTotal = new LinkedHashMap<>();
+        categoryConvertedTotal.put(new ReportService.CategoryPair("Продукты", "Магазины"), new BigDecimal("335"));
+        categoryConvertedTotal.put(new ReportService.CategoryPair("Транспорт", ""), new BigDecimal("65"));
+        categoryConvertedTotal.put(new ReportService.CategoryPair("Комиссии", ""), new BigDecimal("30"));
 
-        List<List<Object>> summary = ReportService.buildSummarySheet(incomeByCurrency, expenseByCurrency, feesByCurrency, byCategoryTotal);
-        List<List<Object>> byCategory = ReportService.buildByCategorySheet(byCategoryAndCounterparty);
+        List<List<Object>> summary = ReportService.buildSummarySheet(months, categoryConvertedTotal);
+        List<List<Object>> byCategory = List.of(List.of("category", "subcategory", "currency", "nickname", "amount"));
         List<List<Object>> byMember = List.of(List.of("member", "expense"));
 
-        ReportTables tables = new ReportTables(summary, byCategory, byMember, transactions, incomeByCurrency, expenseByCurrency);
+        ReportTables tables = new ReportTables(summary, byCategory, byMember, transactions,
+                new BigDecimal("1500"), new BigDecimal("430"), "BYN");
         byte[] xlsx = new ExcelReportExporter().export(tables);
 
         try (XSSFWorkbook wb = new XSSFWorkbook(new ByteArrayInputStream(xlsx))) {
-            Map<String, Double> summaryValues = readSummaryMetrics(wb.getSheet("Summary"));
-            assertEquals(1000.0, summaryValues.get("income|BYN"));
-            assertEquals(395.0, summaryValues.get("expense|BYN"));
-            assertEquals(605.0, summaryValues.get("net|BYN"));
-            assertEquals(45.0, summaryValues.get("fees|BYN"));
-            assertEquals(0.0, summaryValues.getOrDefault("income|EUR", 0.0));
-            assertEquals(5.0, summaryValues.get("expense|EUR"));
-            assertEquals(-5.0, summaryValues.get("net|EUR"));
+            Map<String, Double> metrics = readMetrics(wb.getSheet("Summary"));
+            assertEquals(1000.0, metrics.get("Доход|2026-01"));
+            assertEquals(230.0, metrics.get("Расход|2026-01"), "100 + 35(yellow) + 50(green) + 30 + 15, CASH excluded");
+            assertEquals(770.0, metrics.get("Нетто|2026-01"));
+            assertEquals(45.0, metrics.get("Комиссии|2026-01"), "30 by category + 15 by nickname");
+            assertEquals(500.0, metrics.get("Доход|2026-02"));
+            assertEquals(200.0, metrics.get("Расход|2026-02"));
+            assertEquals(300.0, metrics.get("Нетто|2026-02"));
+            assertEquals(0.0, metrics.getOrDefault("Комиссии|2026-02", 0.0));
+            assertEquals(1500.0, metrics.get("Доход|Итого"));
+            assertEquals(430.0, metrics.get("Расход|Итого"));
+            assertEquals(1070.0, metrics.get("Нетто|Итого"));
+            assertEquals(45.0, metrics.get("Комиссии|Итого"));
 
-            Map<String, Double> categoryBreakdown = readSummaryCategoryBreakdown(wb.getSheet("Summary"));
-            assertEquals(150.0, categoryBreakdown.get("Продукты|Магазины|BYN"));
-            assertEquals(5.0, categoryBreakdown.get("Продукты|Магазины|EUR"));
-            assertEquals(215.0, categoryBreakdown.get("Транспорт||BYN"));
-
-            Map<String, Double> subtotals = readByCategorySubtotals(wb.getSheet("ByCategory"));
-            assertEquals(150.0, subtotals.get("Подытог|Продукты|Магазины|BYN"), "subcategory subtotal");
-            assertEquals(150.0, subtotals.get("ИТОГО|Продукты||BYN"), "category subtotal must not double-count the subcategory subtotal row within its range");
-            assertEquals(5.0, subtotals.get("ИТОГО|Продукты||EUR"));
-            assertEquals(215.0, subtotals.get("ИТОГО|Транспорт||BYN"), "no subcategory subtotal row for a blank subcategory, but category subtotal still works");
-            assertEquals(30.0, subtotals.get("ИТОГО|Комиссии||BYN"));
+            Map<String, Double> byCat = readCategoryBreakdown(wb.getSheet("Summary"));
+            assertEquals(135.0, byCat.get("Продукты|Магазины|2026-01"), "100 BYN + 35 yellow-converted EUR");
+            assertEquals(200.0, byCat.get("Продукты|Магазины|2026-02"));
+            assertEquals(335.0, byCat.get("Продукты|Магазины|Итого"));
+            assertEquals(65.0, byCat.get("Транспорт||2026-01"), "50 green-converted USD taxi + 15 FEE-nickname row, both categorized Транспорт");
+            assertEquals(30.0, byCat.get("Комиссии||2026-01"));
         }
     }
 
     private List<Object> txRow(String occurredAt, String direction, String amount, String currency,
-            String account, String category, String subcategory, String nickname, String member, boolean isTransfer) {
-        return List.of(occurredAt, direction, new BigDecimal(amount), currency, account, category, subcategory, nickname, member, isTransfer);
+            Object rateCell, Object amountCell, String account, String category, String subcategory,
+            String nickname, String member, String monthKey) {
+        java.util.List<Object> row = new ArrayList<>();
+        row.add(occurredAt);
+        row.add(direction);
+        row.add(new BigDecimal(amount));
+        row.add(currency);
+        row.add(rateCell);
+        row.add(amountCell);
+        row.add(account);
+        row.add(category);
+        row.add(subcategory);
+        row.add(nickname);
+        row.add(member);
+        row.add(monthKey);
+        return row;
     }
 
-    private Map<String, Double> readSummaryMetrics(XSSFSheet sheet) {
+    private Map<String, Double> readMetrics(XSSFSheet sheet) {
         Map<String, Double> result = new HashMap<>();
+        List<String> monthCols = null;
         for (Row row : sheet) {
             if (row.getRowNum() == 0) {
+                monthCols = new ArrayList<>();
+                for (Cell c : row) {
+                    if (c.getColumnIndex() < 2) {
+                        continue;
+                    }
+                    monthCols.add(c.getStringCellValue());
+                }
                 continue;
             }
-            Cell metricCell = row.getCell(0);
-            Cell currencyCell = row.getCell(1);
-            Cell valueCell = row.getCell(2);
-            if (metricCell == null || currencyCell == null || valueCell == null || metricCell.getCellType() != CellType.STRING) {
+            Cell labelCell = row.getCell(0);
+            if (labelCell == null || labelCell.getCellType() != CellType.STRING) {
                 continue;
             }
-            String metric = metricCell.getStringCellValue();
-            if (!List.of("income", "expense", "net", "fees").contains(metric)) {
+            String label = labelCell.getStringCellValue();
+            if ("Категория".equals(label)) {
+                // Metrics block ends here; the category-breakdown block below can reuse
+                // the same label (e.g. "Комиссии" is both a metric and a category name).
+                break;
+            }
+            if (!List.of("Доход", "Расход", "Нетто", "Комиссии").contains(label)) {
                 continue;
             }
-            result.put(metric + "|" + currencyCell.getStringCellValue(), valueCell.getNumericCellValue());
+            for (int i = 0; i < monthCols.size(); i++) {
+                Cell valueCell = row.getCell(2 + i);
+                if (valueCell == null) {
+                    continue;
+                }
+                result.put(label + "|" + headerToKey(monthCols.get(i)), valueCell.getNumericCellValue());
+            }
         }
         return result;
     }
 
-    private Map<String, Double> readSummaryCategoryBreakdown(XSSFSheet sheet) {
+    private String headerToKey(String header) {
+        if ("Итого".equals(header)) {
+            return "Итого";
+        }
+        Map<String, Integer> ru = Map.of("Январь", 1, "Февраль", 2);
+        String[] parts = header.split(" ");
+        return parts[1] + "-" + String.format("%02d", ru.getOrDefault(parts[0], 0));
+    }
+
+    private Map<String, Double> readCategoryBreakdown(XSSFSheet sheet) {
         Map<String, Double> result = new HashMap<>();
-        boolean inBreakdown = false;
+        boolean inBlock = false;
+        List<String> monthCols = null;
         for (Row row : sheet) {
             Cell first = row.getCell(0);
-            if (first != null && first.getCellType() == CellType.STRING && "category".equals(first.getStringCellValue())) {
-                inBreakdown = true;
+            if (first != null && first.getCellType() == CellType.STRING && "Категория".equals(first.getStringCellValue())) {
+                inBlock = true;
+                monthCols = new ArrayList<>();
+                for (Cell c : row) {
+                    if (c.getColumnIndex() < 2) {
+                        continue;
+                    }
+                    monthCols.add(c.getStringCellValue());
+                }
                 continue;
             }
-            if (!inBreakdown) {
+            if (!inBlock || first == null || first.getCellType() != CellType.STRING || first.getStringCellValue().isBlank()) {
                 continue;
             }
-            Cell catCell = row.getCell(0);
+            String category = first.getStringCellValue();
             Cell subCell = row.getCell(1);
-            Cell curCell = row.getCell(2);
-            Cell valCell = row.getCell(3);
-            if (catCell == null || valCell == null) {
-                continue;
+            String subcategory = subCell != null && subCell.getCellType() == CellType.STRING ? subCell.getStringCellValue() : "";
+            for (int i = 0; i < monthCols.size(); i++) {
+                Cell valueCell = row.getCell(2 + i);
+                if (valueCell == null) {
+                    continue;
+                }
+                result.put(category + "|" + subcategory + "|" + headerToKey(monthCols.get(i)), valueCell.getNumericCellValue());
             }
-            String key = catCell.getStringCellValue() + "|" + safeString(subCell) + "|" + safeString(curCell);
-            result.put(key, valCell.getNumericCellValue());
         }
         return result;
-    }
-
-    private Map<String, Double> readByCategorySubtotals(XSSFSheet sheet) {
-        Map<String, Double> result = new HashMap<>();
-        for (Row row : sheet) {
-            if (row.getRowNum() == 0) {
-                continue;
-            }
-            Cell catCell = row.getCell(0);
-            Cell subCell = row.getCell(1);
-            Cell curCell = row.getCell(2);
-            Cell nickCell = row.getCell(3);
-            Cell amountCell = row.getCell(4);
-            if (catCell == null || nickCell == null || amountCell == null || nickCell.getCellType() != CellType.STRING) {
-                continue;
-            }
-            String nickname = nickCell.getStringCellValue();
-            if (!ReportService.BY_SUBCATEGORY_SUBTOTAL.equals(nickname) && !ReportService.BY_CATEGORY_SUBTOTAL.equals(nickname)) {
-                continue;
-            }
-            String key = nickname + "|" + catCell.getStringCellValue() + "|" + safeString(subCell) + "|" + safeString(curCell);
-            result.put(key, amountCell.getNumericCellValue());
-        }
-        return result;
-    }
-
-    private String safeString(Cell cell) {
-        return cell == null ? "" : cell.getStringCellValue();
     }
 }

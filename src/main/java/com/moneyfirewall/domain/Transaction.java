@@ -79,6 +79,12 @@ public class Transaction {
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
+    @Column(name = "balance_after", precision = 18, scale = 2)
+    private BigDecimal balanceAfter;
+
+    @Column(name = "balance_currency")
+    private String balanceCurrency;
+
     public UUID getId() {
         return id;
     }
@@ -213,6 +219,22 @@ public class Transaction {
 
     public void setCreatedAt(Instant createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public BigDecimal getBalanceAfter() {
+        return balanceAfter;
+    }
+
+    public void setBalanceAfter(BigDecimal balanceAfter) {
+        this.balanceAfter = balanceAfter;
+    }
+
+    public String getBalanceCurrency() {
+        return balanceCurrency;
+    }
+
+    public void setBalanceCurrency(String balanceCurrency) {
+        this.balanceCurrency = balanceCurrency;
     }
 }
 

@@ -10,6 +10,20 @@ public record ParsedOperation(
         String direction,
         String accountName,
         String counterpartyRaw,
-        String description
-) {}
+        String description,
+        BigDecimal balanceAfter,
+        String balanceCurrency
+) {
+    public ParsedOperation(
+            Instant occurredAt,
+            BigDecimal amount,
+            String currency,
+            String direction,
+            String accountName,
+            String counterpartyRaw,
+            String description
+    ) {
+        this(occurredAt, amount, currency, direction, accountName, counterpartyRaw, description, null, null);
+    }
+}
 

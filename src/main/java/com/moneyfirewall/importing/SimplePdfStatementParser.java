@@ -227,7 +227,8 @@ public class SimplePdfStatementParser implements BankStatementParser {
             }
         }
         Instant occurredAt = occDate.atTime(occTime).toInstant(ZoneOffset.UTC);
-        return new ParsedOperation(occurredAt, opAmount.abs(), currency, dir, "MTBank", counterparty, description);
+        return new ParsedOperation(occurredAt, opAmount.abs(), currency, dir, "MTBank", counterparty, description,
+                accountAmount, currency);
     }
 
     private BigDecimal toAmount(String s) {
@@ -512,6 +513,7 @@ public class SimplePdfStatementParser implements BankStatementParser {
         int summaryIdx = -1;
         String summaryTail = null;
         BigDecimal amount = null;
+        BigDecimal balanceAfter = null;
         String summaryCurrency = null;
         for (int i = 0; i < b.size(); i++) {
             Matcher sm = OPLATI_SUMMARY.matcher(b.get(i));
@@ -520,6 +522,7 @@ public class SimplePdfStatementParser implements BankStatementParser {
             }
             summaryIdx = i;
             amount = toAmountFlexible(sm.group("a1"));
+            balanceAfter = toAmountFlexible(sm.group("a2"));
             summaryCurrency = sm.group("cur");
             String desc = sm.group("desc");
             summaryTail = desc == null || desc.isBlank() ? null : desc.trim();
@@ -555,7 +558,11 @@ public class SimplePdfStatementParser implements BankStatementParser {
                 a2 = v;
                 break;
             }
+            // Scanning backward from the currency: the nearer number is the balance, the farther
+            // one (if found) is the real amount. With only one number found, its role is ambiguous,
+            // so it's kept as the amount and no balance is recorded.
             amount = a2 != null ? a2 : a1;
+            balanceAfter = a2 != null ? a1 : null;
         }
         if (currency == null) {
             currency = "BYN";
@@ -575,7 +582,8 @@ public class SimplePdfStatementParser implements BankStatementParser {
         String paymentType = description == null ? "" : description.trim().toLowerCase(Locale.ROOT);
         String dir = paymentType.startsWith("пополн") ? "INCOME" : "EXPENSE";
 
-        return new ParsedOperation(occurredAt, amount.abs(), currency, dir, "OPLATI", counterparty, description);
+        return new ParsedOperation(occurredAt, amount.abs(), currency, dir, "OPLATI", counterparty, description,
+                balanceAfter == null ? null : balanceAfter.abs(), balanceAfter == null ? null : currency);
     }
 
     private boolean looksLikeNumber(String s) {

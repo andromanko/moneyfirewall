@@ -70,7 +70,7 @@ public class GoogleSheetsExporter {
             writeValues(sheets, spreadsheetId, "ByMember", tables.byMember(), "RAW");
             writeValues(sheets, spreadsheetId, "Transactions", tables.transactions(), "RAW");
             applyByCategoryFormatting(sheets, spreadsheetId, tables.byCategory());
-            applyTransactionsFormatting(sheets, spreadsheetId);
+            applyTransactionsFormatting(sheets, spreadsheetId, tables.currency());
 
             return new ExportResult(spreadsheetId, "https://docs.google.com/spreadsheets/d/" + spreadsheetId);
         } catch (Exception e) {
@@ -162,7 +162,7 @@ public class GoogleSheetsExporter {
         return req;
     }
 
-    private void applyTransactionsFormatting(Sheets sheets, String spreadsheetId) throws Exception {
+    private void applyTransactionsFormatting(Sheets sheets, String spreadsheetId, String defaultCurrency) throws Exception {
         Spreadsheet ss = sheets.spreadsheets().get(spreadsheetId).setIncludeGridData(false).execute();
         Sheet txSheet = ss.getSheets().stream()
                 .filter(s -> "Transactions".equals(s.getProperties().getTitle()))
@@ -181,52 +181,88 @@ public class GoogleSheetsExporter {
             }
         }
 
-        GridRange range = new GridRange()
+        GridRange fullRowRange = new GridRange()
                 .setSheetId(sheetId)
                 .setStartRowIndex(1)
                 .setStartColumnIndex(0)
-                .setEndColumnIndex(9);
+                .setEndColumnIndex(12);
 
-        ConditionalFormatRule grayText = new ConditionalFormatRule()
-                .setRanges(List.of(range))
+        // Rate/converted-amount only (columns E:F) — placed at index 0/1 so they win over the
+        // full-row rules below for the cells they both cover (Sheets applies the first matching rule).
+        GridRange rateRange = new GridRange()
+                .setSheetId(sheetId)
+                .setStartRowIndex(1)
+                .setStartColumnIndex(4)
+                .setEndColumnIndex(6);
+        String escapedCurrency = defaultCurrency.replace("\"", "\"\"");
+
+        ConditionalFormatRule yellowRate = new ConditionalFormatRule()
+                .setRanges(List.of(rateRange))
                 .setBooleanRule(new com.google.api.services.sheets.v4.model.BooleanRule()
                         .setCondition(new BooleanCondition()
                                 .setType("CUSTOM_FORMULA")
                                 .setValues(List.of(new com.google.api.services.sheets.v4.model.ConditionValue()
-                                        .setUserEnteredValue("=$I1=TRUE"))))
+                                        .setUserEnteredValue("=AND($D1<>\"" + escapedCurrency + "\",ISNUMBER($E1))"))))
+                        .setFormat(new CellFormat()
+                                .setBackgroundColor(new Color().setRed(1.0f).setGreen(1.0f).setBlue(0.6f))));
+
+        ConditionalFormatRule greenBalanceDiff = new ConditionalFormatRule()
+                .setRanges(List.of(rateRange))
+                .setBooleanRule(new com.google.api.services.sheets.v4.model.BooleanRule()
+                        .setCondition(new BooleanCondition()
+                                .setType("CUSTOM_FORMULA")
+                                .setValues(List.of(new com.google.api.services.sheets.v4.model.ConditionValue()
+                                        .setUserEnteredValue("=AND($D1<>\"" + escapedCurrency + "\",$E1=\"\")"))))
+                        .setFormat(new CellFormat()
+                                .setBackgroundColor(new Color().setRed(0.8f).setGreen(1.0f).setBlue(0.8f))));
+
+        ConditionalFormatRule grayText = new ConditionalFormatRule()
+                .setRanges(List.of(fullRowRange))
+                .setBooleanRule(new com.google.api.services.sheets.v4.model.BooleanRule()
+                        .setCondition(new BooleanCondition()
+                                .setType("CUSTOM_FORMULA")
+                                .setValues(List.of(new com.google.api.services.sheets.v4.model.ConditionValue()
+                                        .setUserEnteredValue("=$B1=\"Перевод\""))))
                         .setFormat(new CellFormat()
                                 .setTextFormat(new TextFormat()
                                         .setForegroundColor(new Color().setRed(0.5f).setGreen(0.5f).setBlue(0.5f)))));
 
         ConditionalFormatRule greenBack = new ConditionalFormatRule()
-                .setRanges(List.of(range))
+                .setRanges(List.of(fullRowRange))
                 .setBooleanRule(new com.google.api.services.sheets.v4.model.BooleanRule()
                         .setCondition(new BooleanCondition()
                                 .setType("CUSTOM_FORMULA")
                                 .setValues(List.of(new com.google.api.services.sheets.v4.model.ConditionValue()
-                                        .setUserEnteredValue("=AND($B1=\"INCOME\",$I1<>TRUE)"))))
+                                        .setUserEnteredValue("=$B1=\"Доход\""))))
                         .setFormat(new CellFormat()
                                 .setBackgroundColor(new Color().setRed(0.8f).setGreen(1.0f).setBlue(0.8f))));
 
-        req.add(new Request().setAddConditionalFormatRule(new AddConditionalFormatRuleRequest().setRule(grayText).setIndex(0)));
-        req.add(new Request().setAddConditionalFormatRule(new AddConditionalFormatRuleRequest().setRule(greenBack).setIndex(1)));
+        req.add(new Request().setAddConditionalFormatRule(new AddConditionalFormatRuleRequest().setRule(yellowRate).setIndex(0)));
+        req.add(new Request().setAddConditionalFormatRule(new AddConditionalFormatRuleRequest().setRule(greenBalanceDiff).setIndex(1)));
+        req.add(new Request().setAddConditionalFormatRule(new AddConditionalFormatRuleRequest().setRule(grayText).setIndex(2)));
+        req.add(new Request().setAddConditionalFormatRule(new AddConditionalFormatRuleRequest().setRule(greenBack).setIndex(3)));
 
         sheets.spreadsheets().batchUpdate(spreadsheetId, new BatchUpdateSpreadsheetRequest().setRequests(req)).execute();
     }
 
     private void writeValues(Sheets sheets, String spreadsheetId, String sheetName, List<List<Object>> rows, String valueInputOption) throws Exception {
         List<List<Object>> safe = rows.stream()
-                .map(r -> r.stream().<Object>map(v -> switch (v) {
-                    case null -> "";
-                    case FormulaCell f -> "=" + f.expression();
-                    default -> v;
-                }).toList())
+                .map(r -> r.stream().<Object>map(this::unwrapForSheets).toList())
                 .toList();
         ValueRange vr = new ValueRange().setValues(new ArrayList<>(safe));
         sheets.spreadsheets().values()
                 .update(spreadsheetId, sheetName + "!A1", vr)
                 .setValueInputOption(valueInputOption)
                 .execute();
+    }
+
+    private Object unwrapForSheets(Object v) {
+        return switch (v) {
+            case null -> "";
+            case ColoredCell cc -> unwrapForSheets(cc.value());
+            case FormulaCell f -> "=" + f.expression();
+            default -> v;
+        };
     }
 
     public record ExportResult(String spreadsheetId, String url) {}

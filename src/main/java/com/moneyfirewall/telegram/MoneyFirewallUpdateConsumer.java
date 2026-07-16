@@ -201,6 +201,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             case "/budget_create" -> onBudgetCreate(chatId, user.getId(), arg);
             case "/budget_use" -> onBudgetUse(chatId, user.getId(), arg);
             case "/budget_members" -> onBudgetMembers(chatId, user.getId());
+            case "/budget_currency" -> onBudgetCurrency(chatId, user.getId(), arg);
             case "/budget_add" -> onBudgetAdd(chatId, user.getId(), arg);
             case "/budget_remove" -> onBudgetRemove(chatId, user.getId(), arg);
             case "/accounts" -> onAccounts(chatId, user.getId());
@@ -275,6 +276,30 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         } catch (Exception e) {
             sender.sendText(chatId, "Нужно UUID: /budget_use <uuid>");
         }
+    }
+
+    private void onBudgetCurrency(long chatId, UUID userId, String currencyArg) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет: /budget_use <uuid>");
+            return;
+        }
+        if (currencyArg == null || currencyArg.isBlank()) {
+            sender.sendText(chatId, "Текущая валюта отчётов: " + budgetService.getDefaultCurrency(budgetId)
+                    + "\nЧтобы сменить: /budget_currency <код валюты, напр. BYN>");
+            return;
+        }
+        if (!budgetService.isAdmin(budgetId, userId)) {
+            sender.sendText(chatId, "Нужна роль ADMIN");
+            return;
+        }
+        String currency = currencyArg.trim().toUpperCase(Locale.ROOT);
+        if (!currency.matches("[A-Z]{3}")) {
+            sender.sendText(chatId, "Код валюты — 3 латинские буквы, например BYN, USD, EUR");
+            return;
+        }
+        budgetService.setDefaultCurrency(budgetId, currency);
+        sender.sendText(chatId, "Валюта отчётов по умолчанию: " + currency, menuForUser(userId));
     }
 
     private void onBudgetMembers(long chatId, UUID userId) {
@@ -1036,15 +1061,6 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         runReport(chatId, userId, from, to, label);
     }
 
-    private String formatByCurrency(Map<String, BigDecimal> byCurrency) {
-        if (byCurrency.isEmpty()) {
-            return "0";
-        }
-        return byCurrency.entrySet().stream()
-                .map(e -> e.getValue().toPlainString() + " " + e.getKey())
-                .collect(java.util.stream.Collectors.joining(", "));
-    }
-
     private void onReportManualStart(long chatId, UUID userId) {
         if (budgetService.getActiveBudgetId(userId) == null) {
             sender.sendText(chatId, "Сначала выбери бюджет: /budget_use <uuid>");
@@ -1065,8 +1081,8 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         ReportTables tables = reportService.build(budgetId, from, to);
 
         sender.sendText(chatId, "Предпросмотр " + label + "\n" +
-                "Доход: " + formatByCurrency(tables.incomeByCurrency()) + "\n" +
-                "Расход: " + formatByCurrency(tables.expenseByCurrency()) +
+                "Доход: " + tables.incomeTotal().toPlainString() + " " + tables.currency() + "\n" +
+                "Расход: " + tables.expenseTotal().toPlainString() + " " + tables.currency() +
                 (recategorized > 0 ? "\nКатегории проставлены: " + recategorized : "") +
                 (nicknamed > 0 ? "\nНикнеймы обновлены: " + nicknamed : ""));
 
@@ -1873,6 +1889,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 "Счета / Участники — управление в рамках активного бюджета\n" +
                 "Никнеймы — короткие имена контрагентов в отчётах (фраза из выписки → никнейм)\n" +
                 "Категории — правила автопроставления категории по контрагенту\n" +
+                "/budget_currency <код> — валюта отчётов по умолчанию (в неё пересчитываются другие валюты)\n" +
                 "Сброс — вернуться в главное меню\n\n" +
                 "Сборка: " + buildInfoService.buildTime();
     }

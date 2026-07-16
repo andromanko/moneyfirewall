@@ -185,6 +185,8 @@ public class ImportService {
                 t.setCategory(null);
             }
             t.setDescription(op.description());
+            t.setBalanceAfter(op.balanceAfter());
+            t.setBalanceCurrency(op.balanceCurrency());
             t.setSource(TransactionSource.IMPORT);
             t.setExternalHash(externalHash);
             t.setTransferGroup(null);

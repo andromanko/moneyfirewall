@@ -85,6 +85,18 @@ public class BudgetService {
         return budgetMemberRepository.findBudgetsByUserId(userId);
     }
 
+    @Transactional
+    public void setDefaultCurrency(UUID budgetId, String currency) {
+        Budget budget = budgetRepository.findById(budgetId).orElseThrow();
+        budget.setDefaultCurrency(currency.trim().toUpperCase());
+        budgetRepository.save(budget);
+    }
+
+    @Transactional(readOnly = true)
+    public String getDefaultCurrency(UUID budgetId) {
+        return budgetRepository.findById(budgetId).map(Budget::getDefaultCurrency).orElse("BYN");
+    }
+
     @Transactional(readOnly = true)
     public boolean isAdmin(UUID budgetId, UUID userId) {
         return budgetMemberRepository.hasRole(budgetId, userId, BudgetRole.ADMIN);

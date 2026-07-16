@@ -17,18 +17,25 @@ import org.springframework.stereotype.Component;
 public class ExcelReportExporter {
     public byte[] export(ReportTables t) {
         try (XSSFWorkbook wb = new XSSFWorkbook()) {
+            CellStyle yellowStyle = wb.createCellStyle();
+            yellowStyle.setFillForegroundColor(IndexedColors.YELLOW.getIndex());
+            yellowStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+            CellStyle greenStyle = wb.createCellStyle();
+            greenStyle.setFillForegroundColor(IndexedColors.LIGHT_GREEN.getIndex());
+            greenStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+
             XSSFSheet summarySheet = wb.createSheet("Summary");
-            writeSheet(summarySheet, t.summary(), null);
+            writeSheet(summarySheet, t.summary(), null, yellowStyle, greenStyle);
 
             XSSFSheet byCategorySheet = wb.createSheet("ByCategory");
-            writeSheet(byCategorySheet, t.byCategory(), byCategoryRowStyle(wb, t.byCategory()));
+            writeSheet(byCategorySheet, t.byCategory(), byCategoryRowStyle(wb, t.byCategory()), yellowStyle, greenStyle);
             applyByCategoryGrouping(byCategorySheet, t.byCategory());
 
             XSSFSheet byMemberSheet = wb.createSheet("ByMember");
-            writeSheet(byMemberSheet, t.byMember(), null);
+            writeSheet(byMemberSheet, t.byMember(), null, yellowStyle, greenStyle);
 
             XSSFSheet transactionsSheet = wb.createSheet("Transactions");
-            writeSheet(transactionsSheet, t.transactions(), transactionsRowStyle(wb, t.transactions()));
+            writeSheet(transactionsSheet, t.transactions(), transactionsRowStyle(wb, t.transactions()), yellowStyle, greenStyle);
 
             // Formulas (Summary metrics/category breakdown, ByCategory subtotals) reference other
             // sheets/ranges, so evaluate only once every sheet is populated, and autosize afterwards
@@ -62,33 +69,45 @@ public class ExcelReportExporter {
                 .forEach(r -> sheet.groupRow(r.startRow(), r.endRowInclusive()));
     }
 
-    private void writeSheet(XSSFSheet sheet, List<List<Object>> rows, RowStyle rowStyle) {
+    private void writeSheet(XSSFSheet sheet, List<List<Object>> rows, RowStyle rowStyle, CellStyle yellowStyle, CellStyle greenStyle) {
         for (int r = 0; r < rows.size(); r++) {
             Row row = sheet.createRow(r);
             List<Object> cols = rows.get(r);
             for (int c = 0; c < cols.size(); c++) {
                 Cell cell = row.createCell(c);
                 Object v = cols.get(c);
-                if (v == null) {
-                    cell.setBlank();
-                } else if (v instanceof FormulaCell f) {
-                    cell.setCellFormula(f.expression());
-                } else if (v instanceof Boolean bool) {
-                    cell.setCellValue(bool);
-                } else if (v instanceof Number n) {
-                    cell.setCellValue(n.doubleValue());
+                if (v instanceof ColoredCell cc) {
+                    writeCellValue(cell, cc.value());
+                    cell.setCellStyle(cc.color() == ColoredCell.Color.YELLOW ? yellowStyle : greenStyle);
                 } else {
-                    cell.setCellValue(v.toString());
+                    writeCellValue(cell, v);
                 }
             }
             if (rowStyle != null && r > 0) {
                 CellStyle style = rowStyle.styleFor(cols);
                 if (style != null) {
                     for (int c = 0; c < cols.size(); c++) {
-                        row.getCell(c).setCellStyle(style);
+                        // Per-cell colors (rate/converted-amount) win over the row-level style.
+                        if (!(cols.get(c) instanceof ColoredCell)) {
+                            row.getCell(c).setCellStyle(style);
+                        }
                     }
                 }
             }
+        }
+    }
+
+    private void writeCellValue(Cell cell, Object v) {
+        if (v == null) {
+            cell.setBlank();
+        } else if (v instanceof FormulaCell f) {
+            cell.setCellFormula(f.expression());
+        } else if (v instanceof Boolean bool) {
+            cell.setCellValue(bool);
+        } else if (v instanceof Number n) {
+            cell.setCellValue(n.doubleValue());
+        } else {
+            cell.setCellValue(v.toString());
         }
     }
 
@@ -131,9 +150,8 @@ public class ExcelReportExporter {
             return null;
         }
         List<Object> header = rows.getFirst();
-        int directionIdx = header.indexOf("direction");
-        int isTransferIdx = header.indexOf("isTransfer");
-        if (directionIdx < 0 || isTransferIdx < 0) {
+        int directionIdx = header.indexOf("Тип");
+        if (directionIdx < 0) {
             return null;
         }
 
@@ -147,12 +165,12 @@ public class ExcelReportExporter {
         greenBack.setFillPattern(FillPatternType.SOLID_FOREGROUND);
 
         return cols -> {
-            Object isTransfer = isTransferIdx < cols.size() ? cols.get(isTransferIdx) : null;
-            if (Boolean.TRUE.equals(isTransfer) || "true".equalsIgnoreCase(String.valueOf(isTransfer))) {
+            Object dir = directionIdx < cols.size() ? cols.get(directionIdx) : null;
+            String dirStr = String.valueOf(dir);
+            if ("Перевод".equals(dirStr)) {
                 return grayText;
             }
-            Object dir = directionIdx < cols.size() ? cols.get(directionIdx) : null;
-            if ("INCOME".equalsIgnoreCase(String.valueOf(dir))) {
+            if ("Доход".equals(dirStr)) {
                 return greenBack;
             }
             return null;

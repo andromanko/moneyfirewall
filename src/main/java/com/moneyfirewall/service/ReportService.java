@@ -5,14 +5,19 @@ import com.moneyfirewall.domain.CategoryKind;
 import com.moneyfirewall.domain.Transaction;
 import com.moneyfirewall.domain.TransactionDirection;
 import com.moneyfirewall.repo.TransactionRepository;
+import com.moneyfirewall.reporting.ColoredCell;
 import com.moneyfirewall.reporting.FormulaCell;
 import com.moneyfirewall.reporting.ReportTables;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.YearMonth;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -27,38 +32,66 @@ public class ReportService {
     public static final String BY_SUBCATEGORY_SUBTOTAL = "Подытог";
     private static final String FEE_CATEGORY_NAME = "Комиссии";
     private static final String FEE_NICKNAME = "FEE";
-    /** Bounded row count used for cross-sheet SUMIFS/SUMPRODUCT ranges instead of whole-column
-     * references, which POI's formula evaluator would otherwise try to materialize in full. */
+    /** Bounded row count used for cross-sheet SUMIFS ranges instead of whole-column references,
+     * which POI's formula evaluator would otherwise try to materialize in full. */
     private static final int TX_DATA_LAST_ROW = 100_000;
+
+    private static final String[] RUSSIAN_MONTHS = {
+            "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+            "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
+    };
+
+    // Fixed Transactions sheet column letters, referenced by Summary's formulas.
+    private static final String TX_COL_DIRECTION = "B";
+    private static final String TX_COL_AMOUNT_CONVERTED = "F";
+    private static final String TX_COL_CATEGORY = "H";
+    private static final String TX_COL_SUBCATEGORY = "I";
+    private static final String TX_COL_NICKNAME = "J";
+    private static final String TX_COL_MONTH = "L";
 
     private final TransactionRepository transactionRepository;
     private final CategoryService categoryService;
     private final MerchantAliasService merchantAliasService;
+    private final BudgetService budgetService;
+    private final NbrbExchangeRateService nbrbExchangeRateService;
 
     public ReportService(
             TransactionRepository transactionRepository,
             CategoryService categoryService,
-            MerchantAliasService merchantAliasService
+            MerchantAliasService merchantAliasService,
+            BudgetService budgetService,
+            NbrbExchangeRateService nbrbExchangeRateService
     ) {
         this.transactionRepository = transactionRepository;
         this.categoryService = categoryService;
         this.merchantAliasService = merchantAliasService;
+        this.budgetService = budgetService;
+        this.nbrbExchangeRateService = nbrbExchangeRateService;
     }
 
     @Transactional(readOnly = true)
     public ReportTables build(UUID budgetId, Instant from, Instant to) {
         List<Transaction> tx = transactionRepository.findAllInRange(budgetId, from, to);
+        String defaultCurrency = budgetService.getDefaultCurrency(budgetId);
 
-        Map<String, BigDecimal> incomeByCurrency = new TreeMap<>();
-        Map<String, BigDecimal> expenseByCurrency = new TreeMap<>();
-        Map<String, BigDecimal> feesByCurrency = new TreeMap<>();
-
+        // Per-currency maps (unaffected by the default-currency conversion below) feed the
+        // unchanged, original-currency ByCategory sheet.
         Map<CategoryKey, BigDecimal> byCategoryAndCounterparty = new HashMap<>();
         Map<CategorySlot, BigDecimal> byCategoryTotal = new HashMap<>();
         Map<String, BigDecimal> byMember = new HashMap<>();
 
+        // Converted-to-default-currency accumulators, used only to decide Summary's row order and
+        // the Telegram preview totals; the sheet's own numbers come from live formulas.
+        Map<CategoryPair, BigDecimal> categoryConvertedTotal = new HashMap<>();
+        BigDecimal incomeTotal = BigDecimal.ZERO;
+        BigDecimal expenseTotal = BigDecimal.ZERO;
+        Set<String> monthKeysSeen = new TreeSet<>();
+
+        Map<UUID, BigDecimal> lastBalanceByAccount = new HashMap<>();
+
         List<List<Object>> txRows = new ArrayList<>();
-        txRows.add(List.of("occurredAt", "direction", "amount", "currency", "account", "category", "subcategory", "nickname", "member", "isTransfer"));
+        txRows.add(List.of("Дата и время", "Тип", "Сумма", "Валюта", "Курс НБРБ",
+                "Сумма в " + defaultCurrency, "Счёт", "Категория", "Подкатегория", "Контрагент", "Участник", "Месяц"));
 
         for (Transaction t : tx) {
             boolean isTransfer = t.getDirection() == TransactionDirection.TRANSFER || t.getTransferGroup() != null;
@@ -68,15 +101,27 @@ public class ReportService {
             String account = t.getAccount() == null ? "" : t.getAccount().getName();
             String cp = merchantAliasService.resolveDisplayName(budgetId, t.getCounterpartyRaw(), t.getCounterpartyNormalized());
             String currency = t.getCurrency() == null ? "" : t.getCurrency();
+            String monthKey = YearMonth.from(t.getOccurredAt().atZone(ZoneOffset.UTC)).toString();
+            monthKeysSeen.add(monthKey);
+
+            UUID accountId = t.getAccount() == null ? null : t.getAccount().getId();
+            BigDecimal balanceBefore = accountId == null ? null : lastBalanceByAccount.get(accountId);
+            int sheetRow = txRows.size() + 1;
+            ConvertedCells converted = convert(t, currency, defaultCurrency, balanceBefore, sheetRow);
+            if (accountId != null && t.getBalanceAfter() != null && defaultCurrency.equalsIgnoreCase(t.getBalanceCurrency())) {
+                lastBalanceByAccount.put(accountId, t.getBalanceAfter());
+            }
 
             if (!isTransfer) {
                 if (t.getDirection() == TransactionDirection.INCOME) {
-                    incomeByCurrency.merge(currency, t.getAmount(), BigDecimal::add);
+                    incomeTotal = incomeTotal.add(converted.numericAmount());
                 } else if (t.getDirection() == TransactionDirection.EXPENSE) {
                     if (!categoryService.isCash(category)) {
-                        expenseByCurrency.merge(currency, t.getAmount(), BigDecimal::add);
+                        expenseTotal = expenseTotal.add(converted.numericAmount());
+                        categoryConvertedTotal.merge(new CategoryPair(cols.category(), cols.subcategory()), converted.numericAmount(), BigDecimal::add);
+
                         if (FEE_CATEGORY_NAME.equalsIgnoreCase(cols.category()) || FEE_NICKNAME.equalsIgnoreCase(cp)) {
-                            feesByCurrency.merge(currency, t.getAmount(), BigDecimal::add);
+                            // fees participate in the Summary formulas directly from Transactions; no Java accumulation needed.
                         }
                         String nicknameKey = cp.isBlank() ? "" : cp;
                         CategoryKey key = new CategoryKey(cols.category(), cols.subcategory(), currency, nicknameKey);
@@ -89,21 +134,29 @@ public class ReportService {
                 }
             }
 
+            String directionLabel = isTransfer ? "Перевод"
+                    : t.getDirection() == TransactionDirection.INCOME ? "Доход"
+                    : t.getDirection() == TransactionDirection.EXPENSE ? "Расход"
+                    : t.getDirection().name();
+
             txRows.add(List.of(
                     t.getOccurredAt().toString(),
-                    t.getDirection().name(),
+                    directionLabel,
                     t.getAmount(),
                     t.getCurrency(),
+                    converted.rateCell() == null ? "" : converted.rateCell(),
+                    converted.amountCell(),
                     account,
                     cols.category(),
                     cols.subcategory(),
                     cp,
                     member,
-                    isTransfer
+                    monthKey
             ));
         }
 
-        List<List<Object>> summary = buildSummarySheet(incomeByCurrency, expenseByCurrency, feesByCurrency, byCategoryTotal);
+        List<YearMonth> months = monthRange(from, to);
+        List<List<Object>> summary = buildSummarySheet(months, categoryConvertedTotal);
 
         List<List<Object>> catRows = buildByCategorySheet(byCategoryAndCounterparty);
 
@@ -113,45 +166,144 @@ public class ReportService {
                 .sorted(Map.Entry.comparingByValue(Comparator.reverseOrder()))
                 .forEach(e -> memberRows.add(List.of(e.getKey(), e.getValue())));
 
-        return new ReportTables(summary, catRows, memberRows, txRows, incomeByCurrency, expenseByCurrency);
+        return new ReportTables(summary, catRows, memberRows, txRows, incomeTotal, expenseTotal, defaultCurrency);
     }
 
-    static List<List<Object>> buildSummarySheet(
-            Map<String, BigDecimal> incomeByCurrency,
-            Map<String, BigDecimal> expenseByCurrency,
-            Map<String, BigDecimal> feesByCurrency,
-            Map<CategorySlot, BigDecimal> byCategoryTotal
-    ) {
-        List<List<Object>> summary = new ArrayList<>();
-        summary.add(List.of("metric", "currency", "value"));
+    private record ConvertedCells(Object rateCell, Object amountCell, BigDecimal numericAmount) {
+    }
 
-        TreeSet<String> currencies = new TreeSet<>();
-        currencies.addAll(incomeByCurrency.keySet());
-        currencies.addAll(expenseByCurrency.keySet());
-        currencies.addAll(feesByCurrency.keySet());
-        for (String currency : currencies) {
-            int incomeRow = summary.size() + 1;
-            summary.add(List.of("income", currency, incomeFormula(currency)));
-            int expenseRow = summary.size() + 1;
-            summary.add(List.of("expense", currency, expenseFormula(currency)));
-            summary.add(List.of("net", currency, new FormulaCell("C" + incomeRow + "-C" + expenseRow)));
-            summary.add(List.of("fees", currency, feesFormula(currency)));
+    /**
+     * Converts one transaction's amount into the budget's default currency. Trivial when the
+     * transaction is already in that currency; otherwise prefers an exact account-balance
+     * before/after difference (green) over an NBRB rate lookup (yellow) when both the current and
+     * the preceding same-account balance are known in the default currency.
+     */
+    private ConvertedCells convert(Transaction t, String currency, String defaultCurrency, BigDecimal balanceBeforeInDefault, int sheetRow) {
+        if (currency.isBlank() || currency.equalsIgnoreCase(defaultCurrency)) {
+            return new ConvertedCells(null, t.getAmount(), t.getAmount());
         }
+        boolean balanceUsable = t.getBalanceAfter() != null
+                && t.getBalanceCurrency() != null
+                && defaultCurrency.equalsIgnoreCase(t.getBalanceCurrency())
+                && balanceBeforeInDefault != null;
+        if (balanceUsable) {
+            BigDecimal diff = t.getBalanceAfter().subtract(balanceBeforeInDefault).abs();
+            return new ConvertedCells(null, new ColoredCell(diff, ColoredCell.Color.GREEN), diff);
+        }
+        LocalDate date = t.getOccurredAt().atZone(ZoneOffset.UTC).toLocalDate();
+        try {
+            BigDecimal rate = nbrbExchangeRateService.rate(currency, defaultCurrency, date);
+            BigDecimal amount = t.getAmount().multiply(rate);
+            Object rateCell = new ColoredCell(rate, ColoredCell.Color.YELLOW);
+            Object amountCell = new ColoredCell(new FormulaCell("C" + sheetRow + "*E" + sheetRow), ColoredCell.Color.YELLOW);
+            return new ConvertedCells(rateCell, amountCell, amount);
+        } catch (Exception e) {
+            // NBRB unreachable/no rate found: don't fail the whole report, fall back to the raw
+            // amount (uncolored) and flag the missing rate in the rate column.
+            return new ConvertedCells("н/д", t.getAmount(), t.getAmount());
+        }
+    }
+
+    private List<YearMonth> monthRange(Instant from, Instant to) {
+        List<YearMonth> months = new ArrayList<>();
+        YearMonth start = YearMonth.from(from.atZone(ZoneOffset.UTC));
+        Instant lastInclusive = to.isAfter(from) ? to.minusSeconds(1) : from;
+        YearMonth end = YearMonth.from(lastInclusive.atZone(ZoneOffset.UTC));
+        YearMonth cursor = start;
+        while (!cursor.isAfter(end)) {
+            months.add(cursor);
+            cursor = cursor.plusMonths(1);
+        }
+        if (months.isEmpty()) {
+            months.add(start);
+        }
+        return months;
+    }
+
+    private static String monthKey(YearMonth ym) {
+        return ym.toString();
+    }
+
+    private static String monthHeader(YearMonth ym) {
+        return RUSSIAN_MONTHS[ym.getMonthValue() - 1] + " " + ym.getYear();
+    }
+
+    private static String columnLetter(int index0Based) {
+        StringBuilder sb = new StringBuilder();
+        int n = index0Based;
+        while (n >= 0) {
+            sb.insert(0, (char) ('A' + n % 26));
+            n = n / 26 - 1;
+        }
+        return sb.toString();
+    }
+
+    static List<List<Object>> buildSummarySheet(List<YearMonth> months, Map<CategoryPair, BigDecimal> categoryConvertedTotal) {
+        List<List<Object>> summary = new ArrayList<>();
+        int firstMonthCol = 2; // column C (0-based index 2)
+        int lastMonthCol = firstMonthCol + months.size() - 1;
+        int totalCol = lastMonthCol + 1;
+
+        List<Object> header = new ArrayList<>(List.of("Показатель", ""));
+        for (YearMonth ym : months) {
+            header.add(monthHeader(ym));
+        }
+        header.add("Итого");
+        summary.add(header);
+
+        int incomeRow = summary.size() + 1;
+        summary.add(metricRow("Доход", incomeRow, months, ReportService::incomeFormula, firstMonthCol, lastMonthCol));
+        int expenseRow = summary.size() + 1;
+        summary.add(metricRow("Расход", expenseRow, months, ReportService::expenseFormula, firstMonthCol, lastMonthCol));
+        summary.add(netRow(incomeRow, expenseRow, months, firstMonthCol, totalCol));
+        int feesRow = summary.size() + 1;
+        summary.add(metricRow("Комиссии", feesRow, months, ReportService::feesFormula, firstMonthCol, lastMonthCol));
 
         summary.add(List.of());
-        summary.add(List.of("category", "subcategory", "currency", "expense"));
-        byCategoryTotal.entrySet().stream()
-                .sorted(Map.Entry.<CategorySlot, BigDecimal>comparingByValue(Comparator.reverseOrder())
+        List<Object> catHeader = new ArrayList<>(List.of("Категория", "Подкатегория"));
+        for (YearMonth ym : months) {
+            catHeader.add(monthHeader(ym));
+        }
+        catHeader.add("Итого");
+        summary.add(catHeader);
+
+        categoryConvertedTotal.entrySet().stream()
+                .sorted(Map.Entry.<CategoryPair, BigDecimal>comparingByValue(Comparator.reverseOrder())
                         .thenComparing(e -> e.getKey().category())
-                        .thenComparing(e -> e.getKey().subcategory())
-                        .thenComparing(e -> e.getKey().currency()))
-                .forEach(e -> summary.add(List.of(
-                        e.getKey().category(),
-                        e.getKey().subcategory(),
-                        e.getKey().currency(),
-                        categoryExpenseFormula(e.getKey().category(), e.getKey().subcategory(), e.getKey().currency())
-                )));
+                        .thenComparing(e -> e.getKey().subcategory()))
+                .forEach(e -> {
+                    List<Object> row = new ArrayList<>(List.of(e.getKey().category(), e.getKey().subcategory()));
+                    for (YearMonth ym : months) {
+                        row.add(categoryExpenseFormula(e.getKey().category(), e.getKey().subcategory(), ym));
+                    }
+                    row.add(totalFormula(summary.size() + 1, firstMonthCol, lastMonthCol));
+                    summary.add(row);
+                });
         return summary;
+    }
+
+    private static List<Object> metricRow(String label, int rowNumber, List<YearMonth> months, java.util.function.Function<YearMonth, FormulaCell> formulaFn, int firstMonthCol, int lastMonthCol) {
+        List<Object> row = new ArrayList<>(List.of(label, ""));
+        for (YearMonth ym : months) {
+            row.add(formulaFn.apply(ym));
+        }
+        row.add(totalFormula(rowNumber, firstMonthCol, lastMonthCol));
+        return row;
+    }
+
+    private static List<Object> netRow(int incomeRow, int expenseRow, List<YearMonth> months, int firstMonthCol, int totalCol) {
+        List<Object> row = new ArrayList<>(List.of("Нетто", ""));
+        for (int i = 0; i < months.size(); i++) {
+            String col = columnLetter(firstMonthCol + i);
+            row.add(new FormulaCell(col + incomeRow + "-" + col + expenseRow));
+        }
+        String totalColLetter = columnLetter(totalCol);
+        row.add(new FormulaCell(totalColLetter + incomeRow + "-" + totalColLetter + expenseRow));
+        return row;
+    }
+
+    private static FormulaCell totalFormula(int rowNumber, int firstMonthCol, int lastMonthCol) {
+        return new FormulaCell("SUM(" + columnLetter(firstMonthCol) + rowNumber + ":" + columnLetter(lastMonthCol) + rowNumber + ")");
     }
 
     private static String txRange(String column) {
@@ -162,36 +314,29 @@ public class ReportService {
         return s == null ? "" : s.replace("\"", "\"\"");
     }
 
-    private static FormulaCell incomeFormula(String currency) {
-        return new FormulaCell("SUMIFS(" + txRange("C") + "," + txRange("B") + ",\"INCOME\","
-                + txRange("D") + ",\"" + escapeFormulaString(currency) + "\"," + txRange("J") + ",FALSE)");
+    private static FormulaCell incomeFormula(YearMonth ym) {
+        return new FormulaCell("SUMIFS(" + txRange(TX_COL_AMOUNT_CONVERTED) + "," + txRange(TX_COL_DIRECTION) + ",\"Доход\","
+                + txRange(TX_COL_MONTH) + ",\"" + monthKey(ym) + "\")");
     }
 
-    private static FormulaCell expenseFormula(String currency) {
-        return new FormulaCell("SUMIFS(" + txRange("C") + "," + txRange("B") + ",\"EXPENSE\","
-                + txRange("D") + ",\"" + escapeFormulaString(currency) + "\"," + txRange("J") + ",FALSE,"
-                + txRange("F") + ",\"<>CASH\")");
+    private static FormulaCell expenseFormula(YearMonth ym) {
+        return new FormulaCell("SUMIFS(" + txRange(TX_COL_AMOUNT_CONVERTED) + "," + txRange(TX_COL_DIRECTION) + ",\"Расход\","
+                + txRange(TX_COL_MONTH) + ",\"" + monthKey(ym) + "\"," + txRange(TX_COL_CATEGORY) + ",\"<>CASH\")");
     }
 
-    private static FormulaCell feesFormula(String currency) {
-        // Two SUMIFS added together instead of one SUMPRODUCT-with-OR: POI's SUMPRODUCT chokes on
-        // mixing a boolean-literal range comparison (isTransfer=FALSE) into the array arithmetic.
-        // The two conditions (fee category vs. fee nickname) are mutually exclusive by construction
-        // (a transaction's category can't be both "Комиссии" and "<>Комиссии"), so no double-counting.
-        String byCategory = "SUMIFS(" + txRange("C") + "," + txRange("B") + ",\"EXPENSE\","
-                + txRange("D") + ",\"" + escapeFormulaString(currency) + "\"," + txRange("J") + ",FALSE,"
-                + txRange("F") + ",\"" + escapeFormulaString(FEE_CATEGORY_NAME) + "\")";
-        String byNickname = "SUMIFS(" + txRange("C") + "," + txRange("B") + ",\"EXPENSE\","
-                + txRange("D") + ",\"" + escapeFormulaString(currency) + "\"," + txRange("J") + ",FALSE,"
-                + txRange("F") + ",\"<>" + escapeFormulaString(FEE_CATEGORY_NAME) + "\","
-                + txRange("H") + ",\"" + FEE_NICKNAME + "\")";
+    private static FormulaCell feesFormula(YearMonth ym) {
+        String byCategory = "SUMIFS(" + txRange(TX_COL_AMOUNT_CONVERTED) + "," + txRange(TX_COL_DIRECTION) + ",\"Расход\","
+                + txRange(TX_COL_MONTH) + ",\"" + monthKey(ym) + "\"," + txRange(TX_COL_CATEGORY) + ",\"" + escapeFormulaString(FEE_CATEGORY_NAME) + "\")";
+        String byNickname = "SUMIFS(" + txRange(TX_COL_AMOUNT_CONVERTED) + "," + txRange(TX_COL_DIRECTION) + ",\"Расход\","
+                + txRange(TX_COL_MONTH) + ",\"" + monthKey(ym) + "\"," + txRange(TX_COL_CATEGORY) + ",\"<>" + escapeFormulaString(FEE_CATEGORY_NAME) + "\","
+                + txRange(TX_COL_NICKNAME) + ",\"" + FEE_NICKNAME + "\")";
         return new FormulaCell(byCategory + "+" + byNickname);
     }
 
-    private static FormulaCell categoryExpenseFormula(String category, String subcategory, String currency) {
-        return new FormulaCell("SUMIFS(" + txRange("C") + "," + txRange("F") + ",\"" + escapeFormulaString(category)
-                + "\"," + txRange("G") + ",\"" + escapeFormulaString(subcategory) + "\"," + txRange("D") + ",\""
-                + escapeFormulaString(currency) + "\"," + txRange("B") + ",\"EXPENSE\"," + txRange("J") + ",FALSE)");
+    private static FormulaCell categoryExpenseFormula(String category, String subcategory, YearMonth ym) {
+        return new FormulaCell("SUMIFS(" + txRange(TX_COL_AMOUNT_CONVERTED) + "," + txRange(TX_COL_CATEGORY) + ",\"" + escapeFormulaString(category)
+                + "\"," + txRange(TX_COL_SUBCATEGORY) + ",\"" + escapeFormulaString(subcategory) + "\"," + txRange(TX_COL_DIRECTION) + ",\"Расход\","
+                + txRange(TX_COL_MONTH) + ",\"" + monthKey(ym) + "\")");
     }
 
     static List<List<Object>> buildByCategorySheet(Map<CategoryKey, BigDecimal> amounts) {
@@ -358,6 +503,9 @@ public class ReportService {
     }
 
     record CategoryKey(String category, String subcategory, String currency, String nickname) {
+    }
+
+    record CategoryPair(String category, String subcategory) {
     }
 
     public record RowRange(int startRow, int endRowInclusive, int level) {

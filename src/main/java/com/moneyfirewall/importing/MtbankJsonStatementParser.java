@@ -37,32 +37,36 @@ public class MtbankJsonStatementParser implements BankStatementParser {
         return fileType == ImportFileType.JSON && "mtbank".equalsIgnoreCase(bankCode == null ? "" : bankCode.trim());
     }
 
+    private record OpAndAccountCurrency(JsonNode op, String accountCurrency) {
+    }
+
     @Override
     public List<ParsedOperation> parse(byte[] bytes) throws Exception {
         JsonNode root = objectMapper.readTree(bytes);
-        List<JsonNode> operationNodes = new ArrayList<>();
+        List<OpAndAccountCurrency> operationNodes = new ArrayList<>();
         if (root.isArray()) {
-            root.forEach(operationNodes::add);
+            root.forEach(n -> operationNodes.add(new OpAndAccountCurrency(n, null)));
         } else if (root.has("data") && root.get("data").isArray()) {
             for (JsonNode block : root.get("data")) {
+                String accountCurrency = block.hasNonNull("accountCurr") ? block.get("accountCurr").asText().trim().toUpperCase(Locale.ROOT) : null;
                 if (block.has("operations") && block.get("operations").isArray()) {
-                    block.get("operations").forEach(operationNodes::add);
+                    block.get("operations").forEach(n -> operationNodes.add(new OpAndAccountCurrency(n, accountCurrency)));
                 }
             }
         } else if (root.has("operations") && root.get("operations").isArray()) {
-            root.get("operations").forEach(operationNodes::add);
+            root.get("operations").forEach(n -> operationNodes.add(new OpAndAccountCurrency(n, null)));
         } else {
             throw new IllegalArgumentException("Unsupported MTBank JSON");
         }
 
         List<ParsedOperation> res = new ArrayList<>();
         int skippedFailed = 0;
-        for (JsonNode op : operationNodes) {
-            if (isFailed(op)) {
+        for (OpAndAccountCurrency entry : operationNodes) {
+            if (isFailed(entry.op())) {
                 skippedFailed++;
                 continue;
             }
-            res.add(parseOperation(op));
+            res.add(parseOperation(entry.op(), entry.accountCurrency()));
         }
         log.debug("mtbankJson operations={} parsed={} skippedFailed={}", operationNodes.size(), res.size(), skippedFailed);
         return res;
@@ -75,7 +79,7 @@ public class MtbankJsonStatementParser implements BankStatementParser {
         return op.hasNonNull("error") && !op.get("error").asText().isBlank();
     }
 
-    private ParsedOperation parseOperation(JsonNode op) {
+    private ParsedOperation parseOperation(JsonNode op, String accountCurrency) {
         BigDecimal amount = op.hasNonNull("amount") ? new BigDecimal(op.get("amount").asText().trim()).abs() : BigDecimal.ZERO;
         String currency = op.hasNonNull("curr") ? op.get("curr").asText().trim().toUpperCase(Locale.ROOT) : "BYN";
         if (currency.isEmpty()) {
@@ -93,7 +97,13 @@ public class MtbankJsonStatementParser implements BankStatementParser {
 
         Instant occurredAt = parseOccurredAt(op);
 
-        return new ParsedOperation(occurredAt, amount, currency, direction, "MTBank", counterparty, description.isEmpty() ? null : description);
+        // "balance" is always in the underlying account's own currency (accountCurr), even for
+        // card operations whose own "curr" differs (e.g. a USD card charge on a BYN account) — that
+        // makes the before/after diff the bank's own exact conversion, more accurate than an NBRB rate.
+        BigDecimal balanceAfter = op.hasNonNull("balance") ? new BigDecimal(op.get("balance").asText().trim()) : null;
+
+        return new ParsedOperation(occurredAt, amount, currency, direction, "MTBank", counterparty,
+                description.isEmpty() ? null : description, balanceAfter, balanceAfter == null ? null : accountCurrency);
     }
 
     private Instant parseOccurredAt(JsonNode op) {
