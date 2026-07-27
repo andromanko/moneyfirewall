@@ -25,6 +25,11 @@ import org.springframework.transaction.annotation.Transactional;
 public class TransferLinkingService {
     private static final Pattern IBAN_LIKE = Pattern.compile("BY[0-9A-Z]{10,}", Pattern.CASE_INSENSITIVE);
     private static final Pattern LONG_ALNUM = Pattern.compile("[0-9A-Za-z]{8,}");
+    /** Same amount/currency, different account, posted this close together is a transfer even
+     * when the two banks' free-text descriptions share no common token (e.g. "MTB MOBILE BANK"
+     * vs "Поступление средств") — coincidental same-amount unrelated transactions this close in
+     * time are negligibly likely. */
+    private static final Duration TIGHT_WINDOW = Duration.ofMinutes(2);
 
     private final TransactionRepository transactionRepository;
     private final TransferGroupRepository transferGroupRepository;
@@ -128,7 +133,7 @@ public class TransferLinkingService {
             if (d.compareTo(maxDelta) > 0) {
                 continue;
             }
-            if (requireSummary && !summariesHookCompatible(out, in)) {
+            if (requireSummary && d.compareTo(TIGHT_WINDOW) > 0 && !summariesHookCompatible(out, in)) {
                 continue;
             }
             if (best == null || d.compareTo(bestAbs) < 0) {
@@ -204,6 +209,38 @@ public class TransferLinkingService {
             }
             if (isOutgoingTransferLike(t)) {
                 t.setDirection(TransactionDirection.EXPENSE);
+                t.setCategory(null);
+                transactionRepository.save(t);
+            }
+        }
+        fixTopupLegsRecordedAsExpense(candidates);
+    }
+
+    /**
+     * Some banks (observed: Alfa card top-ups, e.g. "Popolnenie debetovoj karti") record the
+     * *receiving* leg of a transfer as an expense in their own export even though it's
+     * semantically incoming money. Such a leg — topup-worded but without the mp2p/mp2b sender
+     * marker — gets reclassified to INCOME when a same-amount, same-currency, different-account
+     * expense that IS sender-worded (mp2p/mp2b) posted within the tight window, so the normal
+     * expense/income pairing below can link them.
+     */
+    private void fixTopupLegsRecordedAsExpense(List<Transaction> candidates) {
+        List<Transaction> expenses = candidates.stream()
+                .filter(t -> t.getDirection() == TransactionDirection.EXPENSE && t.getTransferGroup() == null)
+                .toList();
+        for (Transaction t : expenses) {
+            if (isOutgoingTransferLike(t) || !topupLike(summaryText(t))) {
+                continue;
+            }
+            boolean hasSendingCounterpart = expenses.stream().anyMatch(other ->
+                    !other.getId().equals(t.getId())
+                            && isOutgoingTransferLike(other)
+                            && other.getCurrency().equalsIgnoreCase(t.getCurrency())
+                            && other.getAmount().compareTo(t.getAmount()) == 0
+                            && !other.getAccount().getId().equals(t.getAccount().getId())
+                            && Duration.between(t.getOccurredAt(), other.getOccurredAt()).abs().compareTo(TIGHT_WINDOW) <= 0);
+            if (hasSendingCounterpart) {
+                t.setDirection(TransactionDirection.INCOME);
                 t.setCategory(null);
                 transactionRepository.save(t);
             }

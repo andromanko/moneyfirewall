@@ -91,7 +91,7 @@ public class ReportService {
 
         List<List<Object>> txRows = new ArrayList<>();
         txRows.add(List.of("Дата и время", "Тип", "Сумма", "Валюта", "Курс НБРБ",
-                "Сумма в " + defaultCurrency, "Счёт", "Категория", "Подкатегория", "Контрагент", "Участник", "Месяц"));
+                "Сумма в " + defaultCurrency, "Счёт", "Категория", "Подкатегория", "Контрагент", "Участник", "Месяц", "ID"));
 
         for (Transaction t : tx) {
             boolean isTransfer = t.getDirection() == TransactionDirection.TRANSFER || t.getTransferGroup() != null;
@@ -151,7 +151,8 @@ public class ReportService {
                     cols.subcategory(),
                     cp,
                     member,
-                    monthKey
+                    monthKey,
+                    t.getId().toString()
             ));
         }
 

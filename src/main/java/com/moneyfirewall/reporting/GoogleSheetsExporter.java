@@ -185,7 +185,7 @@ public class GoogleSheetsExporter {
                 .setSheetId(sheetId)
                 .setStartRowIndex(1)
                 .setStartColumnIndex(0)
-                .setEndColumnIndex(12);
+                .setEndColumnIndex(13);
 
         // Rate/converted-amount only (columns E:F) — placed at index 0/1 so they win over the
         // full-row rules below for the cells they both cover (Sheets applies the first matching rule).
