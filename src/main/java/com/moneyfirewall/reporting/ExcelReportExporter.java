@@ -24,18 +24,21 @@ public class ExcelReportExporter {
             greenStyle.setFillForegroundColor(IndexedColors.LIGHT_GREEN.getIndex());
             greenStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
 
+            CellStyle moneyStyle = wb.createCellStyle();
+            moneyStyle.setDataFormat(wb.createDataFormat().getFormat("# ##0.00"));
+
             XSSFSheet summarySheet = wb.createSheet("Summary");
-            writeSheet(summarySheet, t.summary(), null, yellowStyle, greenStyle);
+            writeSheet(summarySheet, t.summary(), null, yellowStyle, greenStyle, moneyStyle);
 
             XSSFSheet byCategorySheet = wb.createSheet("ByCategory");
-            writeSheet(byCategorySheet, t.byCategory(), byCategoryRowStyle(wb, t.byCategory()), yellowStyle, greenStyle);
+            writeSheet(byCategorySheet, t.byCategory(), byCategoryRowStyle(wb, t.byCategory()), yellowStyle, greenStyle, moneyStyle);
             applyByCategoryGrouping(byCategorySheet, t.byCategory());
 
             XSSFSheet byMemberSheet = wb.createSheet("ByMember");
-            writeSheet(byMemberSheet, t.byMember(), null, yellowStyle, greenStyle);
+            writeSheet(byMemberSheet, t.byMember(), null, yellowStyle, greenStyle, moneyStyle);
 
             XSSFSheet transactionsSheet = wb.createSheet("Transactions");
-            writeSheet(transactionsSheet, t.transactions(), transactionsRowStyle(wb, t.transactions()), yellowStyle, greenStyle);
+            writeSheet(transactionsSheet, t.transactions(), transactionsRowStyle(wb, t.transactions()), yellowStyle, greenStyle, moneyStyle);
 
             // Formulas (Summary metrics/category breakdown, ByCategory subtotals) reference other
             // sheets/ranges, so evaluate only once every sheet is populated, and autosize afterwards
@@ -69,18 +72,23 @@ public class ExcelReportExporter {
                 .forEach(r -> sheet.groupRow(r.startRow(), r.endRowInclusive()));
     }
 
-    private void writeSheet(XSSFSheet sheet, List<List<Object>> rows, RowStyle rowStyle, CellStyle yellowStyle, CellStyle greenStyle) {
+    private void writeSheet(XSSFSheet sheet, List<List<Object>> rows, RowStyle rowStyle, CellStyle yellowStyle, CellStyle greenStyle, CellStyle moneyStyle) {
         for (int r = 0; r < rows.size(); r++) {
             Row row = sheet.createRow(r);
             List<Object> cols = rows.get(r);
             for (int c = 0; c < cols.size(); c++) {
                 Cell cell = row.createCell(c);
                 Object v = cols.get(c);
+                boolean isMoneyCell = r > 0 && (v instanceof Number || v instanceof FormulaCell);
                 if (v instanceof ColoredCell cc) {
                     writeCellValue(cell, cc.value());
                     cell.setCellStyle(cc.color() == ColoredCell.Color.YELLOW ? yellowStyle : greenStyle);
                 } else {
                     writeCellValue(cell, v);
+                    // Apply money format to numeric values and formulas (skip header row)
+                    if (isMoneyCell) {
+                        cell.setCellStyle(moneyStyle);
+                    }
                 }
             }
             if (rowStyle != null && r > 0) {
