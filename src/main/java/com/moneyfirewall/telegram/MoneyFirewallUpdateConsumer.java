@@ -3419,6 +3419,15 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
     }
 
     private InlineKeyboardMarkup amountMenu(String key) {
+        if ("expense_manual".equals(key)) {
+            return InlineKeyboardMarkup.builder()
+                    .keyboard(List.of(
+                            new InlineKeyboardRow(btn("10", "wiz:amount:" + key + ":10"), btn("20", "wiz:amount:" + key + ":20"), btn("30", "wiz:amount:" + key + ":30")),
+                            new InlineKeyboardRow(btn("40", "wiz:amount:" + key + ":40"), btn("50", "wiz:amount:" + key + ":50"), btn("70", "wiz:amount:" + key + ":70")),
+                            new InlineKeyboardRow(btn("100", "wiz:amount:" + key + ":100"), btn("200", "wiz:amount:" + key + ":200"), btn("Отмена", "wiz:confirm:" + key + ":cancel"))
+                    ))
+                    .build();
+        }
         return InlineKeyboardMarkup.builder()
                 .keyboard(List.of(
                         new InlineKeyboardRow(btn("10", "wiz:amount:" + key + ":10"), btn("20", "wiz:amount:" + key + ":20"), btn("50", "wiz:amount:" + key + ":50")),
