@@ -160,6 +160,15 @@ public class CategoryRuleService {
     }
 
     @Transactional
+    public CategoryRule updateCategory(UUID budgetId, UUID ruleId, Category category) {
+        CategoryRule r = ruleRepository.findByIdWithCategory(ruleId)
+                .filter(x -> x.getBudget().getId().equals(budgetId))
+                .orElseThrow();
+        r.setCategory(category);
+        return ruleRepository.save(r);
+    }
+
+    @Transactional
     public void delete(UUID id) {
         ruleRepository.deleteById(id);
     }

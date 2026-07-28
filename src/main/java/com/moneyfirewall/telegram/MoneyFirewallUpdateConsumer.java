@@ -1240,6 +1240,42 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return true;
         }
 
+        if ("catrule_edit_cat".equals(st.key())) {
+            UUID budgetId = budgetService.getActiveBudgetId(userId);
+            if (budgetId == null) {
+                conversationService.clear(userId);
+                sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+                return true;
+            }
+            if (!budgetService.isAdmin(budgetId, userId)) {
+                conversationService.clear(userId);
+                sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+                return true;
+            }
+            String ruleId = st.payload().getOrDefault("ruleId", "").toString();
+            String step = st.payload().getOrDefault("step", "").toString();
+            if ("newCategoryName".equals(step)) {
+                String name = text == null ? "" : text.trim();
+                if (name.isBlank()) {
+                    sender.sendText(chatId, "Введите название категории", catRuleViewOnlyBackMenu(ruleId));
+                    return true;
+                }
+                String kindRaw = st.payload().getOrDefault("kind", "").toString();
+                CategoryKind kind;
+                try {
+                    kind = CategoryKind.valueOf(kindRaw);
+                } catch (Exception e) {
+                    conversationService.clear(userId);
+                    sender.sendText(chatId, "Ошибка", menuForUser(userId));
+                    return true;
+                }
+                Category category = categoryService.ensure(budgetId, kind, name);
+                applyCategoryRuleEdit(chatId, userId, budgetId, ruleId, category);
+                return true;
+            }
+            return true;
+        }
+
         if ("category_rename".equals(st.key())) {
             UUID budgetId = budgetService.getActiveBudgetId(userId);
             if (budgetId == null) {
@@ -1611,6 +1647,24 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return;
         }
 
+        if (data.startsWith("mf:catrules:view:")) {
+            String ruleId = data.substring("mf:catrules:view:".length());
+            onCategoryRuleView(chatId, user.getId(), ruleId);
+            return;
+        }
+
+        if (data.startsWith("mf:catrules:edit_cat_pick:")) {
+            String categoryId = data.substring("mf:catrules:edit_cat_pick:".length());
+            onCategoryRuleEditCategoryPick(chatId, user.getId(), categoryId);
+            return;
+        }
+
+        if (data.startsWith("mf:catrules:edit_cat:")) {
+            String ruleId = data.substring("mf:catrules:edit_cat:".length());
+            onCategoryRuleEditCategoryStart(chatId, user.getId(), ruleId);
+            return;
+        }
+
         if (data.startsWith("mf:cat:add_kind:")) {
             String kind = data.substring("mf:cat:add_kind:".length());
             onCategoryAddKind(chatId, user.getId(), kind);
@@ -1695,6 +1749,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             case "mf:catrules:add" -> onCategoryRulesAddStart(chatId, user.getId());
             case "mf:catrules:list" -> onCategoryRulesList(chatId, user.getId());
             case "mf:catrules:add_newcat" -> onCategoryRuleAddNewCategory(chatId, user.getId());
+            case "mf:catrules:edit_cat_newcat" -> onCategoryRuleEditCategoryNewCategory(chatId, user.getId());
             case "mf:cat_export" -> onCategoriesExport(chatId, user.getId());
             case "mf:cat_import" -> onCategoriesImportStart(chatId, user.getId());
             case "mf:cat:add" -> onCategoryAddStart(chatId, user.getId());
@@ -2280,17 +2335,55 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         for (int i = 0; i < rules.size(); i++) {
             CategoryRule r = rules.get(i);
             String label = truncate((i + 1) + ". " + categoryRuleLabel(r), 64);
-            rows.add(new InlineKeyboardRow(btn(label, "mf:catrules:del:" + r.getId())));
+            rows.add(new InlineKeyboardRow(btn(label, "mf:catrules:view:" + r.getId())));
         }
         rows.add(new InlineKeyboardRow(btn("⬅️ Назад", "mf:catrules")));
         return InlineKeyboardMarkup.builder().keyboard(rows).build();
+    }
+
+    private InlineKeyboardMarkup catRuleViewMenu(String ruleId) {
+        return InlineKeyboardMarkup.builder()
+                .keyboard(List.of(
+                        new InlineKeyboardRow(btn("✏️ Изменить категорию", "mf:catrules:edit_cat:" + ruleId)),
+                        new InlineKeyboardRow(btn("🗑️ Удалить", "mf:catrules:del:" + ruleId)),
+                        new InlineKeyboardRow(btn("⬅️ Назад", "mf:catrules:list"))
+                ))
+                .build();
     }
 
     private InlineKeyboardMarkup catRuleDeleteConfirmMenu(String ruleId) {
         return InlineKeyboardMarkup.builder()
                 .keyboard(List.of(
                         new InlineKeyboardRow(btn("✅ Удалить", "mf:catrules:del_do:" + ruleId)),
-                        new InlineKeyboardRow(btn("⬅️ Назад", "mf:catrules:list"))
+                        new InlineKeyboardRow(btn("⬅️ Назад", "mf:catrules:view:" + ruleId))
+                ))
+                .build();
+    }
+
+    private InlineKeyboardMarkup catRuleEditCategoryMenu(UUID budgetId, CategoryKind kind, String ruleId) {
+        List<InlineKeyboardRow> rows = new ArrayList<>();
+        if (kind == CategoryKind.EXPENSE) {
+            Category cash = categoryService.ensureCash(budgetId);
+            rows.add(new InlineKeyboardRow(btn("🏧 Наличные (CASH)", "mf:catrules:edit_cat_pick:" + cash.getId())));
+        }
+        for (Category p : categoryService.listParents(budgetId, kind)) {
+            if (CategoryService.CASH.equalsIgnoreCase(p.getName())) {
+                continue;
+            }
+            rows.add(new InlineKeyboardRow(btn(p.getName(), "mf:catrules:edit_cat_pick:" + p.getId())));
+            for (Category c : categoryService.listChildren(budgetId, kind, p.getId())) {
+                rows.add(new InlineKeyboardRow(btn("— " + c.getName(), "mf:catrules:edit_cat_pick:" + c.getId())));
+            }
+        }
+        rows.add(new InlineKeyboardRow(btn("➕ Новая категория", "mf:catrules:edit_cat_newcat")));
+        rows.add(new InlineKeyboardRow(btn("⬅️ Назад", "mf:catrules:view:" + ruleId)));
+        return InlineKeyboardMarkup.builder().keyboard(rows).build();
+    }
+
+    private InlineKeyboardMarkup catRuleViewOnlyBackMenu(String ruleId) {
+        return InlineKeyboardMarkup.builder()
+                .keyboard(List.of(
+                        new InlineKeyboardRow(btn("⬅️ Назад", "mf:catrules:view:" + ruleId))
                 ))
                 .build();
     }
@@ -2648,6 +2741,103 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         }
         List<CategoryRule> rules = categoryRuleService.list(budgetId);
         sender.sendText(chatId, categoryRulesListText(rules), catRulesListMenu(rules));
+    }
+
+    private void onCategoryRuleView(long chatId, UUID userId, String ruleId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        UUID id;
+        try {
+            id = UUID.fromString(ruleId);
+        } catch (Exception e) {
+            sender.sendText(chatId, "Ошибка", menuForUser(userId));
+            return;
+        }
+        CategoryRule rule = categoryRuleService.find(budgetId, id).orElse(null);
+        if (rule == null) {
+            sender.sendText(chatId, "Правило не найдено", catRulesMenu());
+            return;
+        }
+        sender.sendText(chatId, categoryRuleLabel(rule), catRuleViewMenu(ruleId));
+    }
+
+    private void onCategoryRuleEditCategoryStart(long chatId, UUID userId, String ruleId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        if (!budgetService.isAdmin(budgetId, userId)) {
+            sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+            return;
+        }
+        UUID id;
+        try {
+            id = UUID.fromString(ruleId);
+        } catch (Exception e) {
+            sender.sendText(chatId, "Ошибка", menuForUser(userId));
+            return;
+        }
+        CategoryRule rule = categoryRuleService.find(budgetId, id).orElse(null);
+        if (rule == null) {
+            sender.sendText(chatId, "Правило не найдено", catRulesMenu());
+            return;
+        }
+        CategoryKind kind = rule.getCategory().getKind();
+        conversationService.set(userId, "catrule_edit_cat", new HashMap<>(Map.of("ruleId", ruleId, "kind", kind.name())));
+        sender.sendText(chatId, "Выбери новую категорию для правила", catRuleEditCategoryMenu(budgetId, kind, ruleId));
+    }
+
+    private void onCategoryRuleEditCategoryNewCategory(long chatId, UUID userId) {
+        State st = conversationService.get(userId).orElse(null);
+        if (st == null || !"catrule_edit_cat".equals(st.key())) {
+            sender.sendText(chatId, "Нет активного визарда", menuForUser(userId));
+            return;
+        }
+        String ruleId = st.payload().getOrDefault("ruleId", "").toString();
+        Map<String, Object> p = new HashMap<>(st.payload());
+        p.put("step", "newCategoryName");
+        conversationService.set(userId, "catrule_edit_cat", p);
+        sender.sendText(chatId, "Введите название категории", catRuleViewOnlyBackMenu(ruleId));
+    }
+
+    private void onCategoryRuleEditCategoryPick(long chatId, UUID userId, String categoryId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            conversationService.clear(userId);
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        State st = conversationService.get(userId).orElse(null);
+        if (st == null || !"catrule_edit_cat".equals(st.key())) {
+            sender.sendText(chatId, "Нет активного визарда", menuForUser(userId));
+            return;
+        }
+        String ruleId = st.payload().getOrDefault("ruleId", "").toString();
+        Category category = categoryService.findById(budgetId, UUID.fromString(categoryId)).orElse(null);
+        if (category == null) {
+            sender.sendText(chatId, "Категория не найдена", catRulesMenu());
+            return;
+        }
+        applyCategoryRuleEdit(chatId, userId, budgetId, ruleId, category);
+    }
+
+    private void applyCategoryRuleEdit(long chatId, UUID userId, UUID budgetId, String ruleId, Category category) {
+        try {
+            categoryRuleService.updateCategory(budgetId, UUID.fromString(ruleId), category);
+        } catch (Exception e) {
+            conversationService.clear(userId);
+            sender.sendText(chatId, "Правило не найдено", catRulesMenu());
+            return;
+        }
+        conversationService.clear(userId);
+        int recategorized = categoryRuleService.recategorizeInPeriod(budgetId, Instant.EPOCH, Instant.now().plus(java.time.Duration.ofDays(1)));
+        String msg = "✅ Категория изменена: " + categoryService.displayName(category)
+                + (recategorized > 0 ? "\nКатегории проставлены: " + recategorized : "");
+        sender.sendText(chatId, msg, catRuleViewMenu(ruleId));
     }
 
     private void onCategoryRuleDeleteConfirm(long chatId, UUID userId, String ruleId) {
