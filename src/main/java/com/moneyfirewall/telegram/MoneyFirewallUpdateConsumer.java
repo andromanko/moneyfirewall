@@ -1160,7 +1160,8 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                     categoryRuleService.add(budgetId, kind, categoryName, pattern, 100, false);
                 }
                 conversationService.clear(userId);
-                sender.sendText(chatId, "Ок", catRulesMenu());
+                int recategorized = categoryRuleService.recategorizeInPeriod(budgetId, Instant.EPOCH, Instant.now().plus(java.time.Duration.ofDays(1)));
+                sender.sendText(chatId, "Ок" + (recategorized > 0 ? "\nКатегории проставлены: " + recategorized : ""), catRulesMenu());
                 return true;
             }
             return true;
@@ -1209,24 +1210,31 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             }
             if ("child_name".equals(step)) {
                 String name = text == null ? "" : text.trim();
+                String parentIdStr = st.payload().getOrDefault("parentId", "").toString();
+                InlineKeyboardMarkup backMenu = parentIdStr.isBlank() ? catRulesBackMenu() : categoryAddChildBackMenu(UUID.fromString(parentIdStr));
                 if (name.isBlank()) {
-                    sender.sendText(chatId, "Введите название подкатегории", catRulesBackMenu());
+                    sender.sendText(chatId, "Введите название подкатегории", backMenu);
                     return true;
                 }
-                String parentIdStr = st.payload().getOrDefault("parentId", "").toString();
                 String parentName = st.payload().getOrDefault("parentName", "").toString();
                 if (parentIdStr.isBlank()) {
                     conversationService.clear(userId);
                     sender.sendText(chatId, "Ошибка", menuForUser(userId));
                     return true;
                 }
-                if (categoryService.existsChildByName(budgetId, kind, UUID.fromString(parentIdStr), name)) {
-                    sender.sendText(chatId, "Категория с таким именем уже существует", catRulesBackMenu());
+                UUID parentId = UUID.fromString(parentIdStr);
+                if (categoryService.existsChildByName(budgetId, kind, parentId, name)) {
+                    sender.sendText(chatId, "Категория с таким именем уже существует", backMenu);
                     return true;
                 }
                 categoryService.ensureChild(budgetId, kind, parentName, name);
                 conversationService.clear(userId);
-                sender.sendText(chatId, "✅ Категория создана: " + parentName + " / " + name, catRulesMenu());
+                Category parent = categoryService.findById(budgetId, parentId).orElse(null);
+                if (parent == null) {
+                    sender.sendText(chatId, "✅ Категория создана: " + parentName + " / " + name, catRulesMenu());
+                    return true;
+                }
+                sendCategoryView(chatId, budgetId, parent, "✅ Добавлено: " + parentName + " / " + name);
                 return true;
             }
             return true;
@@ -1612,6 +1620,12 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         if (data.startsWith("mf:cat:add_parent:")) {
             String parentId = data.substring("mf:cat:add_parent:".length());
             onCategoryAddParent(chatId, user.getId(), parentId);
+            return;
+        }
+
+        if (data.startsWith("mf:cat:add_child:")) {
+            String parentId = data.substring("mf:cat:add_child:".length());
+            onCategoryAddChildDirect(chatId, user.getId(), parentId);
             return;
         }
 
@@ -2243,6 +2257,10 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
 
     private InlineKeyboardMarkup catRulesPickCategoryMenu(UUID budgetId, CategoryKind kind) {
         List<InlineKeyboardRow> rows = new ArrayList<>();
+        if (kind == CategoryKind.EXPENSE) {
+            Category cash = categoryService.ensureCash(budgetId);
+            rows.add(new InlineKeyboardRow(btn("🏧 Наличные (CASH)", "mf:catrules:add_cat:" + cash.getId())));
+        }
         for (com.moneyfirewall.domain.Category p : categoryService.listParents(budgetId, kind)) {
             if (CategoryService.CASH.equalsIgnoreCase(p.getName())) {
                 continue;
@@ -2320,35 +2338,51 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
     }
 
     private InlineKeyboardMarkup categoryListMenu(UUID budgetId, CategoryKind kind) {
-        List<InlineKeyboardRow> rows = new ArrayList<>();
+        List<InlineKeyboardButton> buttons = new ArrayList<>();
         for (Category p : categoryService.listParents(budgetId, kind)) {
             if (CategoryService.CASH.equalsIgnoreCase(p.getName())) {
                 continue;
             }
-            rows.add(new InlineKeyboardRow(btn(p.getName(), "mf:cat:view:" + p.getId())));
+            buttons.add(btn(p.getName(), "mf:cat:view:" + p.getId()));
             for (Category c : categoryService.listChildren(budgetId, kind, p.getId())) {
-                rows.add(new InlineKeyboardRow(btn("— " + c.getName(), "mf:cat:view:" + c.getId())));
+                buttons.add(btn("— " + c.getName(), "mf:cat:view:" + c.getId()));
             }
+        }
+        List<InlineKeyboardRow> rows = new ArrayList<>();
+        int columns = buttons.size() > 10 ? 2 : 1;
+        for (int i = 0; i < buttons.size(); i += columns) {
+            rows.add(new InlineKeyboardRow(buttons.subList(i, Math.min(i + columns, buttons.size()))));
         }
         rows.add(new InlineKeyboardRow(btn("⬅️ Назад", "mf:catrules")));
         return InlineKeyboardMarkup.builder().keyboard(rows).build();
     }
 
-    private InlineKeyboardMarkup categoryViewMenu(Category c) {
-        String backData = "mf:cat:list_kind:" + c.getKind().name();
-        return InlineKeyboardMarkup.builder()
-                .keyboard(List.of(
-                        new InlineKeyboardRow(btn("✏️ Переименовать", "mf:cat:rename:" + c.getId())),
-                        new InlineKeyboardRow(btn("🗑️ Удалить", "mf:cat:del:" + c.getId())),
-                        new InlineKeyboardRow(btn("⬅️ Назад", backData))
-                ))
-                .build();
+    private InlineKeyboardMarkup categoryViewMenu(Category c, List<Category> children) {
+        List<InlineKeyboardRow> rows = new ArrayList<>();
+        for (Category child : children) {
+            rows.add(new InlineKeyboardRow(btn("— " + child.getName(), "mf:cat:view:" + child.getId())));
+        }
+        if (c.getParentCategory() == null) {
+            rows.add(new InlineKeyboardRow(btn("➕ Добавить подкатегорию", "mf:cat:add_child:" + c.getId())));
+        }
+        rows.add(new InlineKeyboardRow(btn("✏️ Переименовать", "mf:cat:rename:" + c.getId())));
+        rows.add(new InlineKeyboardRow(btn("🗑️ Удалить", "mf:cat:del:" + c.getId())));
+        rows.add(new InlineKeyboardRow(btn("⬅️ Назад", "mf:cat:list_kind:" + c.getKind().name())));
+        return InlineKeyboardMarkup.builder().keyboard(rows).build();
     }
 
     private InlineKeyboardMarkup categoryViewOnlyBackMenu(Category c) {
         return InlineKeyboardMarkup.builder()
                 .keyboard(List.of(
                         new InlineKeyboardRow(btn("⬅️ Назад", "mf:cat:view:" + c.getId()))
+                ))
+                .build();
+    }
+
+    private InlineKeyboardMarkup categoryAddChildBackMenu(UUID parentId) {
+        return InlineKeyboardMarkup.builder()
+                .keyboard(List.of(
+                        new InlineKeyboardRow(btn("⬅️ Назад", "mf:cat:view:" + parentId))
                 ))
                 .build();
     }
@@ -2725,7 +2759,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         p.put("parentName", parent.getName());
         p.put("step", "child_name");
         conversationService.set(userId, "category_add", p);
-        sender.sendText(chatId, "Введите название подкатегории для '" + parent.getName() + "'", catRulesBackMenu());
+        sender.sendText(chatId, "Введите название подкатегории для '" + parent.getName() + "'", categoryAddChildBackMenu(parent.getId()));
     }
 
     private void onCategoryAddParentNew(long chatId, UUID userId) {
@@ -2749,7 +2783,9 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         Map<String, Object> p = new HashMap<>(st.payload());
         p.put("step", "child_name");
         conversationService.set(userId, "category_add", p);
-        sender.sendText(chatId, "Введите название подкатегории (например, 'Завтрак')", catRulesBackMenu());
+        String parentIdStr = st.payload().getOrDefault("parentId", "").toString();
+        InlineKeyboardMarkup backMenu = parentIdStr.isBlank() ? catRulesBackMenu() : categoryAddChildBackMenu(UUID.fromString(parentIdStr));
+        sender.sendText(chatId, "Введите название подкатегории (например, 'Завтрак')", backMenu);
     }
 
     private void onCategoryAddChildNo(long chatId, UUID userId) {
@@ -2758,9 +2794,39 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             sender.sendText(chatId, "Нет активного визарда", menuForUser(userId));
             return;
         }
-        String parentName = st.payload().getOrDefault("parentName", "").toString();
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        String parentIdStr = st.payload().getOrDefault("parentId", "").toString();
         conversationService.clear(userId);
-        sender.sendText(chatId, "✅ Категория создана: " + parentName, catRulesMenu());
+        Category parent = budgetId == null || parentIdStr.isBlank() ? null : categoryService.findById(budgetId, UUID.fromString(parentIdStr)).orElse(null);
+        if (parent == null) {
+            sender.sendText(chatId, "✅ Категория создана", catRulesMenu());
+            return;
+        }
+        sendCategoryView(chatId, budgetId, parent, "✅ Категория создана: " + parent.getName());
+    }
+
+    private void onCategoryAddChildDirect(long chatId, UUID userId, String parentId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        if (!budgetService.isAdmin(budgetId, userId)) {
+            sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+            return;
+        }
+        Category parent = categoryService.findById(budgetId, UUID.fromString(parentId)).orElse(null);
+        if (parent == null) {
+            sender.sendText(chatId, "Категория не найдена", catRulesMenu());
+            return;
+        }
+        conversationService.set(userId, "category_add", new HashMap<>(Map.of(
+                "kind", parent.getKind().name(),
+                "parentId", parent.getId().toString(),
+                "parentName", parent.getName(),
+                "step", "child_name"
+        )));
+        sender.sendText(chatId, "Введите название подкатегории для '" + parent.getName() + "'", categoryAddChildBackMenu(parent.getId()));
     }
 
     private void onCategoryListStart(long chatId, UUID userId) {
@@ -2799,16 +2865,29 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             sender.sendText(chatId, "Категория не найдена", catRulesMenu());
             return;
         }
+        sendCategoryView(chatId, budgetId, c, null);
+    }
+
+    private void sendCategoryView(long chatId, UUID budgetId, Category c, String prefixMessage) {
+        List<Category> children = c.getParentCategory() == null ? categoryService.listChildren(budgetId, c.getKind(), c.getId()) : List.of();
         long txCount = categoryService.countTransactions(budgetId, c.getId());
         int ruleCount = categoryRuleService.listByCategory(budgetId, c.getId()).size();
         StringBuilder sb = new StringBuilder();
+        if (prefixMessage != null) {
+            sb.append(prefixMessage).append("\n\n");
+        }
         sb.append(categoryService.displayName(c)).append("\n");
         sb.append("Операций: ").append(txCount).append(" | Правил: ").append(ruleCount);
         if (c.getParentCategory() == null) {
-            int childCount = categoryService.listChildren(budgetId, c.getKind(), c.getId()).size();
-            sb.append(" | Подкатегорий: ").append(childCount);
+            sb.append(" | Подкатегорий: ").append(children.size());
+            if (!children.isEmpty()) {
+                sb.append("\n\nПодкатегории:\n");
+                for (Category child : children) {
+                    sb.append("— ").append(child.getName()).append("\n");
+                }
+            }
         }
-        sender.sendText(chatId, sb.toString(), categoryViewMenu(c));
+        sender.sendText(chatId, sb.toString().stripTrailing(), categoryViewMenu(c, children));
     }
 
     private void onCategoryRenameStart(long chatId, UUID userId, String categoryId) {
