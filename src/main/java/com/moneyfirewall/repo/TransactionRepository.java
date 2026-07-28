@@ -79,6 +79,9 @@ public interface TransactionRepository extends JpaRepository<Transaction, UUID> 
             """)
     List<Object[]> countIncomesByCategoryId(@Param("budgetId") UUID budgetId);
 
+    @Query("select count(t) from Transaction t where t.budget.id = :budgetId and t.category.id = :categoryId")
+    long countByBudgetIdAndCategoryId(@Param("budgetId") UUID budgetId, @Param("categoryId") UUID categoryId);
+
     @Query("""
             select count(t) > 0 from Transaction t
             where t.budget.id = :budgetId

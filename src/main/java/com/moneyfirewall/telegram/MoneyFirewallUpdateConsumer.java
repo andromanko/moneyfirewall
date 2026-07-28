@@ -1166,6 +1166,109 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return true;
         }
 
+        if ("category_add".equals(st.key())) {
+            UUID budgetId = budgetService.getActiveBudgetId(userId);
+            if (budgetId == null) {
+                conversationService.clear(userId);
+                sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+                return true;
+            }
+            if (!budgetService.isAdmin(budgetId, userId)) {
+                conversationService.clear(userId);
+                sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+                return true;
+            }
+            String step = st.payload().getOrDefault("step", "").toString();
+            String kindRaw = st.payload().getOrDefault("kind", "").toString();
+            CategoryKind kind;
+            try {
+                kind = CategoryKind.valueOf(kindRaw);
+            } catch (Exception e) {
+                conversationService.clear(userId);
+                sender.sendText(chatId, "Ошибка", menuForUser(userId));
+                return true;
+            }
+            if ("parent_name".equals(step)) {
+                String name = text == null ? "" : text.trim();
+                if (name.isBlank()) {
+                    sender.sendText(chatId, "Введите название основной категории", catRulesBackMenu());
+                    return true;
+                }
+                if (categoryService.existsParentByName(budgetId, kind, name)) {
+                    sender.sendText(chatId, "Категория с таким именем уже существует", catRulesBackMenu());
+                    return true;
+                }
+                Category parent = categoryService.ensure(budgetId, kind, name);
+                Map<String, Object> p = new HashMap<>(st.payload());
+                p.put("parentId", parent.getId().toString());
+                p.put("parentName", parent.getName());
+                p.put("step", "child_check");
+                conversationService.set(userId, "category_add", p);
+                sender.sendText(chatId, "Добавляем подкатегорию к '" + parent.getName() + "'?", categoryAddChildCheckMenu());
+                return true;
+            }
+            if ("child_name".equals(step)) {
+                String name = text == null ? "" : text.trim();
+                if (name.isBlank()) {
+                    sender.sendText(chatId, "Введите название подкатегории", catRulesBackMenu());
+                    return true;
+                }
+                String parentIdStr = st.payload().getOrDefault("parentId", "").toString();
+                String parentName = st.payload().getOrDefault("parentName", "").toString();
+                if (parentIdStr.isBlank()) {
+                    conversationService.clear(userId);
+                    sender.sendText(chatId, "Ошибка", menuForUser(userId));
+                    return true;
+                }
+                if (categoryService.existsChildByName(budgetId, kind, UUID.fromString(parentIdStr), name)) {
+                    sender.sendText(chatId, "Категория с таким именем уже существует", catRulesBackMenu());
+                    return true;
+                }
+                categoryService.ensureChild(budgetId, kind, parentName, name);
+                conversationService.clear(userId);
+                sender.sendText(chatId, "✅ Категория создана: " + parentName + " / " + name, catRulesMenu());
+                return true;
+            }
+            return true;
+        }
+
+        if ("category_rename".equals(st.key())) {
+            UUID budgetId = budgetService.getActiveBudgetId(userId);
+            if (budgetId == null) {
+                conversationService.clear(userId);
+                sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+                return true;
+            }
+            if (!budgetService.isAdmin(budgetId, userId)) {
+                conversationService.clear(userId);
+                sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+                return true;
+            }
+            String categoryIdStr = st.payload().getOrDefault("categoryId", "").toString();
+            Category c = categoryIdStr.isBlank() ? null : categoryService.findById(budgetId, UUID.fromString(categoryIdStr)).orElse(null);
+            if (c == null) {
+                conversationService.clear(userId);
+                sender.sendText(chatId, "Категория не найдена", catRulesMenu());
+                return true;
+            }
+            String name = text == null ? "" : text.trim();
+            if (name.isBlank()) {
+                sender.sendText(chatId, "Введите новое название", categoryViewOnlyBackMenu(c));
+                return true;
+            }
+            boolean duplicate = c.getParentCategory() == null
+                    ? categoryService.existsParentByName(budgetId, c.getKind(), name) && !name.equalsIgnoreCase(c.getName())
+                    : categoryService.existsChildByName(budgetId, c.getKind(), c.getParentCategory().getId(), name) && !name.equalsIgnoreCase(c.getName());
+            if (duplicate) {
+                sender.sendText(chatId, "Категория с таким именем уже существует", categoryViewOnlyBackMenu(c));
+                return true;
+            }
+            categoryService.rename(budgetId, c.getId(), name);
+            conversationService.clear(userId);
+            sender.sendText(chatId, "✅ Переименовано: " + (c.getParentCategory() == null ? name : c.getParentCategory().getName() + " / " + name), catRulesMenu());
+            return true;
+        }
+
         if ("nickname_add".equals(st.key())) {
             UUID budgetId = budgetService.getActiveBudgetId(userId);
             if (budgetId == null) {
@@ -1500,6 +1603,48 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return;
         }
 
+        if (data.startsWith("mf:cat:add_kind:")) {
+            String kind = data.substring("mf:cat:add_kind:".length());
+            onCategoryAddKind(chatId, user.getId(), kind);
+            return;
+        }
+
+        if (data.startsWith("mf:cat:add_parent:")) {
+            String parentId = data.substring("mf:cat:add_parent:".length());
+            onCategoryAddParent(chatId, user.getId(), parentId);
+            return;
+        }
+
+        if (data.startsWith("mf:cat:list_kind:")) {
+            String kind = data.substring("mf:cat:list_kind:".length());
+            onCategoryListKind(chatId, user.getId(), kind);
+            return;
+        }
+
+        if (data.startsWith("mf:cat:view:")) {
+            String categoryId = data.substring("mf:cat:view:".length());
+            onCategoryView(chatId, user.getId(), categoryId);
+            return;
+        }
+
+        if (data.startsWith("mf:cat:rename:")) {
+            String categoryId = data.substring("mf:cat:rename:".length());
+            onCategoryRenameStart(chatId, user.getId(), categoryId);
+            return;
+        }
+
+        if (data.startsWith("mf:cat:del_do:")) {
+            String categoryId = data.substring("mf:cat:del_do:".length());
+            onCategoryDeleteDo(chatId, user.getId(), categoryId);
+            return;
+        }
+
+        if (data.startsWith("mf:cat:del:")) {
+            String categoryId = data.substring("mf:cat:del:".length());
+            onCategoryDeleteConfirm(chatId, user.getId(), categoryId);
+            return;
+        }
+
         if (data.startsWith("mf:aliases:del_do:")) {
             String aliasId = data.substring("mf:aliases:del_do:".length());
             onNicknameDeleteDo(chatId, user.getId(), aliasId);
@@ -1538,6 +1683,11 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             case "mf:catrules:add_newcat" -> onCategoryRuleAddNewCategory(chatId, user.getId());
             case "mf:cat_export" -> onCategoriesExport(chatId, user.getId());
             case "mf:cat_import" -> onCategoriesImportStart(chatId, user.getId());
+            case "mf:cat:add" -> onCategoryAddStart(chatId, user.getId());
+            case "mf:cat:add_parent_new" -> onCategoryAddParentNew(chatId, user.getId());
+            case "mf:cat:add_child_yes" -> onCategoryAddChildYes(chatId, user.getId());
+            case "mf:cat:add_child_no" -> onCategoryAddChildNo(chatId, user.getId());
+            case "mf:cat:list" -> onCategoryListStart(chatId, user.getId());
             case "mf:aliases" -> onNicknamesMenu(chatId, user.getId());
             case "mf:aliases:add" -> onNicknamesAddStart(chatId, user.getId());
             case "mf:aliases:list" -> onNicknamesList(chatId, user.getId());
@@ -1890,7 +2040,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 "Отчёт — период кнопками или свой (даты YYYY-MM-DD)\n" +
                 "Счета / Участники — управление в рамках активного бюджета\n" +
                 "Никнеймы — короткие имена контрагентов в отчётах (фраза из выписки → никнейм)\n" +
-                "Категории — правила автопроставления категории по контрагенту\n" +
+                "Категории — создание/список/переименование/удаление категорий и подкатегорий, правила автопроставления категории по контрагенту\n" +
                 "/budget_currency <код> — валюта отчётов по умолчанию (в неё пересчитываются другие валюты)\n" +
                 "Сброс — вернуться в главное меню\n\n" +
                 "Сборка: " + buildInfoService.buildTime();
@@ -2054,6 +2204,8 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
     private InlineKeyboardMarkup catRulesMenu() {
         return InlineKeyboardMarkup.builder()
                 .keyboard(List.of(
+                        new InlineKeyboardRow(btn("➕ Добавить категорию", "mf:cat:add")),
+                        new InlineKeyboardRow(btn("📋 Список категорий", "mf:cat:list")),
                         new InlineKeyboardRow(btn("➕ Добавить правило", "mf:catrules:add")),
                         new InlineKeyboardRow(btn("📋 Список правил", "mf:catrules:list")),
                         new InlineKeyboardRow(btn("📤 Экспорт категорий", "mf:cat_export"), btn("📥 Импорт категорий", "mf:cat_import")),
@@ -2121,6 +2273,91 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 .keyboard(List.of(
                         new InlineKeyboardRow(btn("✅ Удалить", "mf:catrules:del_do:" + ruleId)),
                         new InlineKeyboardRow(btn("⬅️ Назад", "mf:catrules:list"))
+                ))
+                .build();
+    }
+
+    private InlineKeyboardMarkup categoryAddKindMenu() {
+        return InlineKeyboardMarkup.builder()
+                .keyboard(List.of(
+                        new InlineKeyboardRow(btn("🧾 Расход", "mf:cat:add_kind:EXPENSE")),
+                        new InlineKeyboardRow(btn("💰 Доход", "mf:cat:add_kind:INCOME")),
+                        new InlineKeyboardRow(btn("⬅️ Назад", "mf:catrules"))
+                ))
+                .build();
+    }
+
+    private InlineKeyboardMarkup categoryAddParentSelectMenu(UUID budgetId, CategoryKind kind) {
+        List<InlineKeyboardRow> rows = new ArrayList<>();
+        for (Category p : categoryService.listParents(budgetId, kind)) {
+            if (CategoryService.CASH.equalsIgnoreCase(p.getName())) {
+                continue;
+            }
+            rows.add(new InlineKeyboardRow(btn(p.getName(), "mf:cat:add_parent:" + p.getId())));
+        }
+        rows.add(new InlineKeyboardRow(btn("➕ Новая категория", "mf:cat:add_parent_new")));
+        rows.add(new InlineKeyboardRow(btn("⬅️ Назад", "mf:catrules")));
+        return InlineKeyboardMarkup.builder().keyboard(rows).build();
+    }
+
+    private InlineKeyboardMarkup categoryAddChildCheckMenu() {
+        return InlineKeyboardMarkup.builder()
+                .keyboard(List.of(
+                        new InlineKeyboardRow(btn("✅ Добавить подкатегорию", "mf:cat:add_child_yes")),
+                        new InlineKeyboardRow(btn("✔️ Оставить только основную", "mf:cat:add_child_no"))
+                ))
+                .build();
+    }
+
+    private InlineKeyboardMarkup categoryListKindMenu() {
+        return InlineKeyboardMarkup.builder()
+                .keyboard(List.of(
+                        new InlineKeyboardRow(btn("🧾 Расход", "mf:cat:list_kind:EXPENSE")),
+                        new InlineKeyboardRow(btn("💰 Доход", "mf:cat:list_kind:INCOME")),
+                        new InlineKeyboardRow(btn("⬅️ Назад", "mf:catrules"))
+                ))
+                .build();
+    }
+
+    private InlineKeyboardMarkup categoryListMenu(UUID budgetId, CategoryKind kind) {
+        List<InlineKeyboardRow> rows = new ArrayList<>();
+        for (Category p : categoryService.listParents(budgetId, kind)) {
+            if (CategoryService.CASH.equalsIgnoreCase(p.getName())) {
+                continue;
+            }
+            rows.add(new InlineKeyboardRow(btn(p.getName(), "mf:cat:view:" + p.getId())));
+            for (Category c : categoryService.listChildren(budgetId, kind, p.getId())) {
+                rows.add(new InlineKeyboardRow(btn("— " + c.getName(), "mf:cat:view:" + c.getId())));
+            }
+        }
+        rows.add(new InlineKeyboardRow(btn("⬅️ Назад", "mf:catrules")));
+        return InlineKeyboardMarkup.builder().keyboard(rows).build();
+    }
+
+    private InlineKeyboardMarkup categoryViewMenu(Category c) {
+        String backData = "mf:cat:list_kind:" + c.getKind().name();
+        return InlineKeyboardMarkup.builder()
+                .keyboard(List.of(
+                        new InlineKeyboardRow(btn("✏️ Переименовать", "mf:cat:rename:" + c.getId())),
+                        new InlineKeyboardRow(btn("🗑️ Удалить", "mf:cat:del:" + c.getId())),
+                        new InlineKeyboardRow(btn("⬅️ Назад", backData))
+                ))
+                .build();
+    }
+
+    private InlineKeyboardMarkup categoryViewOnlyBackMenu(Category c) {
+        return InlineKeyboardMarkup.builder()
+                .keyboard(List.of(
+                        new InlineKeyboardRow(btn("⬅️ Назад", "mf:cat:view:" + c.getId()))
+                ))
+                .build();
+    }
+
+    private InlineKeyboardMarkup categoryDeleteConfirmMenu(UUID categoryId) {
+        return InlineKeyboardMarkup.builder()
+                .keyboard(List.of(
+                        new InlineKeyboardRow(btn("✅ Удалить", "mf:cat:del_do:" + categoryId)),
+                        new InlineKeyboardRow(btn("⬅️ Назад", "mf:cat:view:" + categoryId))
                 ))
                 .build();
     }
@@ -2423,6 +2660,239 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         }
         List<CategoryRule> rules = categoryRuleService.list(budgetId);
         sender.sendText(chatId, "Удалено\n\n" + categoryRulesListText(rules), catRulesListMenu(rules));
+    }
+
+    private void onCategoryAddStart(long chatId, UUID userId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        if (!budgetService.isAdmin(budgetId, userId)) {
+            sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+            return;
+        }
+        conversationService.set(userId, "category_add", new HashMap<>(Map.of("step", "kind")));
+        sender.sendText(chatId, "Выбери тип операции", categoryAddKindMenu());
+    }
+
+    private void onCategoryAddKind(long chatId, UUID userId, String kindRaw) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            conversationService.clear(userId);
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        State st = conversationService.get(userId).orElse(null);
+        if (st == null || !"category_add".equals(st.key())) {
+            sender.sendText(chatId, "Нет активного визарда", menuForUser(userId));
+            return;
+        }
+        CategoryKind kind;
+        try {
+            kind = CategoryKind.valueOf(kindRaw);
+        } catch (Exception e) {
+            conversationService.clear(userId);
+            sender.sendText(chatId, "Ошибка", menuForUser(userId));
+            return;
+        }
+        Map<String, Object> p = new HashMap<>(st.payload());
+        p.put("kind", kind.name());
+        p.put("step", "parent_select");
+        conversationService.set(userId, "category_add", p);
+        sender.sendText(chatId, "Выбери основную категорию или создай новую", categoryAddParentSelectMenu(budgetId, kind));
+    }
+
+    private void onCategoryAddParent(long chatId, UUID userId, String parentId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            conversationService.clear(userId);
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        State st = conversationService.get(userId).orElse(null);
+        if (st == null || !"category_add".equals(st.key())) {
+            sender.sendText(chatId, "Нет активного визарда", menuForUser(userId));
+            return;
+        }
+        Category parent = categoryService.findById(budgetId, UUID.fromString(parentId)).orElse(null);
+        if (parent == null) {
+            sender.sendText(chatId, "Категория не найдена", catRulesMenu());
+            return;
+        }
+        Map<String, Object> p = new HashMap<>(st.payload());
+        p.put("parentId", parent.getId().toString());
+        p.put("parentName", parent.getName());
+        p.put("step", "child_name");
+        conversationService.set(userId, "category_add", p);
+        sender.sendText(chatId, "Введите название подкатегории для '" + parent.getName() + "'", catRulesBackMenu());
+    }
+
+    private void onCategoryAddParentNew(long chatId, UUID userId) {
+        State st = conversationService.get(userId).orElse(null);
+        if (st == null || !"category_add".equals(st.key())) {
+            sender.sendText(chatId, "Нет активного визарда", menuForUser(userId));
+            return;
+        }
+        Map<String, Object> p = new HashMap<>(st.payload());
+        p.put("step", "parent_name");
+        conversationService.set(userId, "category_add", p);
+        sender.sendText(chatId, "Введите название основной категории", catRulesBackMenu());
+    }
+
+    private void onCategoryAddChildYes(long chatId, UUID userId) {
+        State st = conversationService.get(userId).orElse(null);
+        if (st == null || !"category_add".equals(st.key())) {
+            sender.sendText(chatId, "Нет активного визарда", menuForUser(userId));
+            return;
+        }
+        Map<String, Object> p = new HashMap<>(st.payload());
+        p.put("step", "child_name");
+        conversationService.set(userId, "category_add", p);
+        sender.sendText(chatId, "Введите название подкатегории (например, 'Завтрак')", catRulesBackMenu());
+    }
+
+    private void onCategoryAddChildNo(long chatId, UUID userId) {
+        State st = conversationService.get(userId).orElse(null);
+        if (st == null || !"category_add".equals(st.key())) {
+            sender.sendText(chatId, "Нет активного визарда", menuForUser(userId));
+            return;
+        }
+        String parentName = st.payload().getOrDefault("parentName", "").toString();
+        conversationService.clear(userId);
+        sender.sendText(chatId, "✅ Категория создана: " + parentName, catRulesMenu());
+    }
+
+    private void onCategoryListStart(long chatId, UUID userId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        sender.sendText(chatId, "Выбери тип категорий", categoryListKindMenu());
+    }
+
+    private void onCategoryListKind(long chatId, UUID userId, String kindRaw) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        CategoryKind kind;
+        try {
+            kind = CategoryKind.valueOf(kindRaw);
+        } catch (Exception e) {
+            sender.sendText(chatId, "Ошибка", menuForUser(userId));
+            return;
+        }
+        sender.sendText(chatId, kind == CategoryKind.EXPENSE ? "Категории расходов" : "Категории доходов", categoryListMenu(budgetId, kind));
+    }
+
+    private void onCategoryView(long chatId, UUID userId, String categoryId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        Category c = categoryService.findById(budgetId, UUID.fromString(categoryId)).orElse(null);
+        if (c == null) {
+            sender.sendText(chatId, "Категория не найдена", catRulesMenu());
+            return;
+        }
+        long txCount = categoryService.countTransactions(budgetId, c.getId());
+        int ruleCount = categoryRuleService.listByCategory(budgetId, c.getId()).size();
+        StringBuilder sb = new StringBuilder();
+        sb.append(categoryService.displayName(c)).append("\n");
+        sb.append("Операций: ").append(txCount).append(" | Правил: ").append(ruleCount);
+        if (c.getParentCategory() == null) {
+            int childCount = categoryService.listChildren(budgetId, c.getKind(), c.getId()).size();
+            sb.append(" | Подкатегорий: ").append(childCount);
+        }
+        sender.sendText(chatId, sb.toString(), categoryViewMenu(c));
+    }
+
+    private void onCategoryRenameStart(long chatId, UUID userId, String categoryId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        if (!budgetService.isAdmin(budgetId, userId)) {
+            sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+            return;
+        }
+        Category c = categoryService.findById(budgetId, UUID.fromString(categoryId)).orElse(null);
+        if (c == null) {
+            sender.sendText(chatId, "Категория не найдена", catRulesMenu());
+            return;
+        }
+        conversationService.set(userId, "category_rename", new HashMap<>(Map.of("categoryId", categoryId)));
+        sender.sendText(chatId, "Введите новое название для '" + c.getName() + "'", categoryViewOnlyBackMenu(c));
+    }
+
+    private void onCategoryDeleteConfirm(long chatId, UUID userId, String categoryId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        if (!budgetService.isAdmin(budgetId, userId)) {
+            sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+            return;
+        }
+        Category c = categoryService.findById(budgetId, UUID.fromString(categoryId)).orElse(null);
+        if (c == null) {
+            sender.sendText(chatId, "Категория не найдена", catRulesMenu());
+            return;
+        }
+        int childCount = c.getParentCategory() == null ? categoryService.listChildren(budgetId, c.getKind(), c.getId()).size() : 0;
+        if (childCount > 0) {
+            sender.sendText(chatId, "Нельзя удалить: сначала удали подкатегории (" + childCount + " шт.)", categoryViewOnlyBackMenu(c));
+            return;
+        }
+        long txCount = categoryService.countTransactions(budgetId, c.getId());
+        if (txCount > 0) {
+            sender.sendText(chatId, "Нельзя удалить: категория используется в " + txCount + " транзакциях", categoryViewOnlyBackMenu(c));
+            return;
+        }
+        List<CategoryRule> rules = categoryRuleService.listByCategory(budgetId, c.getId());
+        String msg = "Удалить '" + categoryService.displayName(c) + "'?";
+        if (!rules.isEmpty()) {
+            msg += "\n⚠️ Будут удалены правила категоризации (" + rules.size() + " шт.)";
+        }
+        sender.sendText(chatId, msg, categoryDeleteConfirmMenu(c.getId()));
+    }
+
+    private void onCategoryDeleteDo(long chatId, UUID userId, String categoryId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        if (!budgetService.isAdmin(budgetId, userId)) {
+            sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+            return;
+        }
+        Category c = categoryService.findById(budgetId, UUID.fromString(categoryId)).orElse(null);
+        if (c == null) {
+            sender.sendText(chatId, "Категория не найдена", catRulesMenu());
+            return;
+        }
+        int childCount = c.getParentCategory() == null ? categoryService.listChildren(budgetId, c.getKind(), c.getId()).size() : 0;
+        if (childCount > 0) {
+            sender.sendText(chatId, "Нельзя удалить: сначала удали подкатегории (" + childCount + " шт.)", categoryViewOnlyBackMenu(c));
+            return;
+        }
+        long txCount = categoryService.countTransactions(budgetId, c.getId());
+        if (txCount > 0) {
+            sender.sendText(chatId, "Нельзя удалить: категория используется в " + txCount + " транзакциях", categoryViewOnlyBackMenu(c));
+            return;
+        }
+        for (CategoryRule r : categoryRuleService.listByCategory(budgetId, c.getId())) {
+            categoryRuleService.delete(r.getId());
+        }
+        categoryService.deleteCategory(budgetId, c.getId());
+        sender.sendText(chatId, "✅ Категория удалена", catRulesMenu());
     }
 
     private void onCashMenu(long chatId, UUID userId) {

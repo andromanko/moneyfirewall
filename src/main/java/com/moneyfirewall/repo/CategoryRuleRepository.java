@@ -25,5 +25,14 @@ public interface CategoryRuleRepository extends JpaRepository<CategoryRule, UUID
             where r.id = :id
             """)
     Optional<CategoryRule> findByIdWithCategory(@Param("id") UUID id);
+
+    @Query("""
+            select r from CategoryRule r
+            join fetch r.category c
+            left join fetch c.parentCategory
+            where r.budget.id = :budgetId and r.category.id = :categoryId
+            order by r.priority asc, r.createdAt asc
+            """)
+    List<CategoryRule> findAllByBudgetIdAndCategoryId(@Param("budgetId") UUID budgetId, @Param("categoryId") UUID categoryId);
 }
 

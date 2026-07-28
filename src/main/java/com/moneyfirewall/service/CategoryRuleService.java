@@ -154,6 +154,11 @@ public class CategoryRuleService {
         return ruleRepository.findByIdWithCategory(id).filter(r -> r.getBudget().getId().equals(budgetId));
     }
 
+    @Transactional(readOnly = true)
+    public List<CategoryRule> listByCategory(UUID budgetId, UUID categoryId) {
+        return ruleRepository.findAllByBudgetIdAndCategoryId(budgetId, categoryId);
+    }
+
     @Transactional
     public void delete(UUID id) {
         ruleRepository.deleteById(id);

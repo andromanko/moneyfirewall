@@ -108,6 +108,34 @@ public class CategoryService {
     }
 
     @Transactional(readOnly = true)
+    public boolean existsParentByName(UUID budgetId, CategoryKind kind, String name) {
+        return categoryRepository.findParentByBudgetIdAndKindAndName(budgetId, kind, name).isPresent();
+    }
+
+    @Transactional(readOnly = true)
+    public boolean existsChildByName(UUID budgetId, CategoryKind kind, UUID parentId, String name) {
+        return categoryRepository.findChildByBudgetIdAndKindAndParentIdAndName(budgetId, kind, parentId, name).isPresent();
+    }
+
+    @Transactional
+    public Category rename(UUID budgetId, UUID categoryId, String newName) {
+        Category c = categoryRepository.findByIdAndBudgetId(categoryId, budgetId).orElseThrow();
+        c.setName(newName);
+        return categoryRepository.save(c);
+    }
+
+    @Transactional(readOnly = true)
+    public long countTransactions(UUID budgetId, UUID categoryId) {
+        return transactionRepository.countByBudgetIdAndCategoryId(budgetId, categoryId);
+    }
+
+    @Transactional
+    public void deleteCategory(UUID budgetId, UUID categoryId) {
+        Category c = categoryRepository.findByIdAndBudgetId(categoryId, budgetId).orElseThrow();
+        categoryRepository.delete(c);
+    }
+
+    @Transactional(readOnly = true)
     public List<Category> listIncomeByUsage(UUID budgetId) {
         Map<UUID, Long> usage = new HashMap<>();
         for (Object[] row : transactionRepository.countIncomesByCategoryId(budgetId)) {
