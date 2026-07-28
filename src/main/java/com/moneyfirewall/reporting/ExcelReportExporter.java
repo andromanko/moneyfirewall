@@ -29,6 +29,7 @@ public class ExcelReportExporter {
 
             XSSFSheet summarySheet = wb.createSheet("Summary");
             writeSheet(summarySheet, t.summary(), summaryRowStyle(wb, t.summary()), yellowStyle, greenStyle, moneyStyle);
+            applySummaryGrouping(summarySheet, t.summary());
 
             XSSFSheet byCategorySheet = wb.createSheet("ByCategory");
             writeSheet(byCategorySheet, t.byCategory(), byCategoryRowStyle(wb, t.byCategory()), yellowStyle, greenStyle, moneyStyle);
@@ -62,6 +63,11 @@ public class ExcelReportExporter {
         for (int i = 0; i < max; i++) {
             sheet.autoSizeColumn(i);
         }
+    }
+
+    private void applySummaryGrouping(XSSFSheet sheet, List<List<Object>> rows) {
+        ReportService.computeSummaryCategoryOutline(rows)
+                .forEach(r -> sheet.groupRow(r.startRow(), r.endRowInclusive()));
     }
 
     private void applyByCategoryGrouping(XSSFSheet sheet, List<List<Object>> rows) {

@@ -511,6 +511,38 @@ public class ReportService {
         return ranges;
     }
 
+    /**
+     * Computes row ranges (0-based, inclusive) for Summary's category-breakdown block so each
+     * category's subcategory rows can be collapsed under its "ИТОГО" rollup row, mirroring
+     * ByCategory's outline. Categories with a single row (no rollup) have nothing to collapse.
+     */
+    public static List<RowRange> computeSummaryCategoryOutline(List<List<Object>> summaryRows) {
+        List<RowRange> ranges = new ArrayList<>();
+        int headerIdx = -1;
+        for (int r = 0; r < summaryRows.size(); r++) {
+            List<Object> row = summaryRows.get(r);
+            if (!row.isEmpty() && "Категория".equals(row.getFirst())) {
+                headerIdx = r;
+                break;
+            }
+        }
+        if (headerIdx < 0) {
+            return ranges;
+        }
+        int blockStart = headerIdx + 1;
+        for (int r = blockStart; r < summaryRows.size(); r++) {
+            List<Object> row = summaryRows.get(r);
+            Object subcategory = row.size() > 1 ? row.get(1) : null;
+            if (BY_CATEGORY_SUBTOTAL.equals(String.valueOf(subcategory))) {
+                if (blockStart <= r - 1) {
+                    ranges.add(new RowRange(blockStart, r - 1, 1));
+                }
+                blockStart = r + 1;
+            }
+        }
+        return ranges;
+    }
+
     private CategoryColumns categoryColumns(UUID budgetId, Category category) {
         if (category == null) {
             return new CategoryColumns("Uncategorized", "");

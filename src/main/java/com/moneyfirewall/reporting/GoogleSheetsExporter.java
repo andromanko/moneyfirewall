@@ -135,7 +135,21 @@ public class GoogleSheetsExporter {
                                 .setTextFormat(new TextFormat().setBold(true))));
 
         req.add(new Request().setAddConditionalFormatRule(new AddConditionalFormatRuleRequest().setRule(categoryTotal).setIndex(0)));
+        req.addAll(summaryGroupingRequests(sheetId, summaryRows));
         sheets.spreadsheets().batchUpdate(spreadsheetId, new BatchUpdateSpreadsheetRequest().setRequests(req)).execute();
+    }
+
+    private List<Request> summaryGroupingRequests(int sheetId, List<List<Object>> summaryRows) {
+        List<ReportService.RowRange> ranges = ReportService.computeSummaryCategoryOutline(summaryRows);
+        List<Request> req = new ArrayList<>();
+        ranges.forEach(r -> req.add(new Request()
+                .setAddDimensionGroup(new AddDimensionGroupRequest()
+                        .setRange(new DimensionRange()
+                                .setSheetId(sheetId)
+                                .setDimension("ROWS")
+                                .setStartIndex(r.startRow())
+                                .setEndIndex(r.endRowInclusive() + 1)))));
+        return req;
     }
 
     private void applyByCategoryFormatting(Sheets sheets, String spreadsheetId, List<List<Object>> byCategoryRows) throws Exception {
