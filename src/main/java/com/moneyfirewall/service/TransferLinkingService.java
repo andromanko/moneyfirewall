@@ -30,6 +30,12 @@ public class TransferLinkingService {
      * vs "Поступление средств") — coincidental same-amount unrelated transactions this close in
      * time are negligibly likely. */
     private static final Duration TIGHT_WINDOW = Duration.ofMinutes(2);
+    /** Same-account expense/income pairs of equal amount posted this close together are the same
+     * underlying event recorded as two legs (e.g. an MTBank "MTB MOBILE BANK" internal move), not
+     * a coincidence — but capped tighter than the cross-account window since two genuinely
+     * unrelated equal-amount transactions on one account are far more plausible than across
+     * different accounts. */
+    private static final Duration SAME_ACCOUNT_WINDOW = Duration.ofMinutes(1);
 
     private final TransactionRepository transactionRepository;
     private final TransferGroupRepository transferGroupRepository;
@@ -113,7 +119,7 @@ public class TransferLinkingService {
         return linked;
     }
 
-    private Transaction findBestMatch(Transaction out, List<Transaction> incomes, Duration maxDelta, boolean requireSummary) {
+    Transaction findBestMatch(Transaction out, List<Transaction> incomes, Duration maxDelta, boolean requireSummary) {
         Transaction best = null;
         Duration bestAbs = null;
         for (Transaction in : incomes) {
@@ -126,15 +132,19 @@ public class TransferLinkingService {
             if (in.getAmount().compareTo(out.getAmount()) != 0) {
                 continue;
             }
-            if (in.getAccount().getId().equals(out.getAccount().getId())) {
-                continue;
-            }
             Duration d = Duration.between(out.getOccurredAt(), in.getOccurredAt()).abs();
-            if (d.compareTo(maxDelta) > 0) {
-                continue;
-            }
-            if (requireSummary && d.compareTo(TIGHT_WINDOW) > 0 && !summariesHookCompatible(out, in)) {
-                continue;
+            boolean sameAccount = in.getAccount().getId().equals(out.getAccount().getId());
+            if (sameAccount) {
+                if (d.compareTo(SAME_ACCOUNT_WINDOW) > 0) {
+                    continue;
+                }
+            } else {
+                if (d.compareTo(maxDelta) > 0) {
+                    continue;
+                }
+                if (requireSummary && d.compareTo(TIGHT_WINDOW) > 0 && !summariesHookCompatible(out, in)) {
+                    continue;
+                }
             }
             if (best == null || d.compareTo(bestAbs) < 0) {
                 best = in;
