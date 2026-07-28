@@ -16,6 +16,8 @@ import com.moneyfirewall.repo.TransferGroupRepository;
 import com.moneyfirewall.repo.UserRepository;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -193,6 +195,26 @@ public class TransactionService {
         t.setTransferGroup(null);
         t.setImportSession(null);
         t.setCreatedAt(Instant.now());
+        return transactionRepository.save(t);
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<Transaction> findById(UUID budgetId, UUID transactionId) {
+        return transactionRepository.findByIdAndBudgetId(transactionId, budgetId);
+    }
+
+    @Transactional(readOnly = true)
+    public List<Transaction> searchByCounterparty(UUID budgetId, String query, int limit) {
+        return transactionRepository.searchByCounterparty(budgetId, query).stream().limit(limit).toList();
+    }
+
+    @Transactional
+    public Transaction setCategory(UUID budgetId, UUID transactionId, Category category) {
+        Transaction t = transactionRepository.findByIdAndBudgetId(transactionId, budgetId).orElseThrow();
+        if (t.getDirection() == TransactionDirection.TRANSFER) {
+            throw new IllegalStateException("Нельзя задать категорию для перевода");
+        }
+        t.setCategory(category);
         return transactionRepository.save(t);
     }
 }

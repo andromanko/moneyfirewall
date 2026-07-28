@@ -8,6 +8,7 @@ import com.moneyfirewall.domain.CategoryKind;
 import com.moneyfirewall.domain.CategoryRule;
 import com.moneyfirewall.domain.MerchantAlias;
 import com.moneyfirewall.domain.ImportFileType;
+import com.moneyfirewall.domain.Transaction;
 import com.moneyfirewall.service.BudgetService;
 import com.moneyfirewall.service.ConversationService;
 import com.moneyfirewall.service.ConversationService.State;
@@ -1297,6 +1298,83 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return true;
         }
 
+        if ("tx_find".equals(st.key())) {
+            UUID budgetId = budgetService.getActiveBudgetId(userId);
+            if (budgetId == null) {
+                conversationService.clear(userId);
+                sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+                return true;
+            }
+            String step = st.payload().getOrDefault("step", "").toString();
+            if ("id".equals(step)) {
+                String raw = text == null ? "" : text.trim();
+                Transaction t;
+                try {
+                    t = transactionService.findById(budgetId, UUID.fromString(raw)).orElse(null);
+                } catch (Exception e) {
+                    t = null;
+                }
+                if (t == null) {
+                    sender.sendText(chatId, "Не найдено, попробуйте другой ID", transactionFindBackMenu());
+                    return true;
+                }
+                conversationService.clear(userId);
+                sender.sendText(chatId, transactionDetailsText(t), transactionViewMenu(t));
+                return true;
+            }
+            if ("counterparty".equals(step)) {
+                String query = text == null ? "" : text.trim();
+                if (query.isBlank()) {
+                    sender.sendText(chatId, "Введите текст контрагента для поиска", transactionFindBackMenu());
+                    return true;
+                }
+                List<Transaction> results = transactionService.searchByCounterparty(budgetId, query, 15);
+                if (results.isEmpty()) {
+                    sender.sendText(chatId, "Ничего не найдено, попробуйте другой текст", transactionFindBackMenu());
+                    return true;
+                }
+                sender.sendText(chatId, "Найдено: " + results.size(), transactionSearchResultsMenu(results));
+                return true;
+            }
+            return true;
+        }
+
+        if ("tx_edit_cat".equals(st.key())) {
+            UUID budgetId = budgetService.getActiveBudgetId(userId);
+            if (budgetId == null) {
+                conversationService.clear(userId);
+                sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+                return true;
+            }
+            if (!budgetService.isAdmin(budgetId, userId)) {
+                conversationService.clear(userId);
+                sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+                return true;
+            }
+            String txId = st.payload().getOrDefault("txId", "").toString();
+            String step = st.payload().getOrDefault("step", "").toString();
+            if ("newCategoryName".equals(step)) {
+                String name = text == null ? "" : text.trim();
+                if (name.isBlank()) {
+                    sender.sendText(chatId, "Введите название категории", transactionViewOnlyBackMenu(txId));
+                    return true;
+                }
+                String kindRaw = st.payload().getOrDefault("kind", "").toString();
+                CategoryKind kind;
+                try {
+                    kind = CategoryKind.valueOf(kindRaw);
+                } catch (Exception e) {
+                    conversationService.clear(userId);
+                    sender.sendText(chatId, "Ошибка", menuForUser(userId));
+                    return true;
+                }
+                Category category = categoryService.ensure(budgetId, kind, name);
+                applyTransactionCategoryEdit(chatId, userId, budgetId, txId, category);
+                return true;
+            }
+            return true;
+        }
+
         if ("category_rename".equals(st.key())) {
             UUID budgetId = budgetService.getActiveBudgetId(userId);
             if (budgetId == null) {
@@ -1686,6 +1764,24 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return;
         }
 
+        if (data.startsWith("mf:tx:edit_cat_pick:")) {
+            String categoryId = data.substring("mf:tx:edit_cat_pick:".length());
+            onTransactionEditCategoryPick(chatId, user.getId(), categoryId);
+            return;
+        }
+
+        if (data.startsWith("mf:tx:edit_cat:")) {
+            String txId = data.substring("mf:tx:edit_cat:".length());
+            onTransactionEditCategoryStart(chatId, user.getId(), txId);
+            return;
+        }
+
+        if (data.startsWith("mf:tx:view:")) {
+            String txId = data.substring("mf:tx:view:".length());
+            onTransactionView(chatId, user.getId(), txId);
+            return;
+        }
+
         if (data.startsWith("mf:cat:add_kind:")) {
             String kind = data.substring("mf:cat:add_kind:".length());
             onCategoryAddKind(chatId, user.getId(), kind);
@@ -1771,6 +1867,10 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             case "mf:catrules:list" -> onCategoryRulesList(chatId, user.getId());
             case "mf:catrules:add_newcat" -> onCategoryRuleAddNewCategory(chatId, user.getId());
             case "mf:catrules:edit_cat_newcat" -> onCategoryRuleEditCategoryNewCategory(chatId, user.getId());
+            case "mf:tx_find" -> onTransactionFindMenu(chatId, user.getId());
+            case "mf:tx_find_id" -> onTransactionFindIdStart(chatId, user.getId());
+            case "mf:tx_find_cp" -> onTransactionFindCounterpartyStart(chatId, user.getId());
+            case "mf:tx:edit_cat_newcat" -> onTransactionEditCategoryNewCategory(chatId, user.getId());
             case "mf:cat_export" -> onCategoriesExport(chatId, user.getId());
             case "mf:cat_import" -> onCategoriesImportStart(chatId, user.getId());
             case "mf:cat:add" -> onCategoryAddStart(chatId, user.getId());
@@ -2283,7 +2383,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                         new InlineKeyboardRow(btn("✍️ Трата (вручную)", "mf:expense_manual")),
                         new InlineKeyboardRow(btn("💵 Наличные", "mf:cash")),
                         new InlineKeyboardRow(btn("🔁 Перевод", "mf:transfer"), btn("📥 Импорт", "mf:import")),
-                        new InlineKeyboardRow(btn("📊 Отчёт", "mf:report")),
+                        new InlineKeyboardRow(btn("📊 Отчёт", "mf:report"), btn("🔍 Транзакция", "mf:tx_find")),
                         new InlineKeyboardRow(btn("💳 Счета", "mf:accounts"), btn("👥 Участники", "mf:budget_members")),
                         new InlineKeyboardRow(btn("🏷 Категории", "mf:catrules"), btn("👤 Никнеймы", "mf:aliases")),
                         new InlineKeyboardRow(btn("❓ Помощь", "mf:help"), btn("🏠 Меню", "mf:cancel"))
@@ -2407,6 +2507,92 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                         new InlineKeyboardRow(btn("⬅️ Назад", "mf:catrules:view:" + ruleId))
                 ))
                 .build();
+    }
+
+    private InlineKeyboardMarkup transactionFindMenu() {
+        return InlineKeyboardMarkup.builder()
+                .keyboard(List.of(
+                        new InlineKeyboardRow(btn("🆔 По ID", "mf:tx_find_id")),
+                        new InlineKeyboardRow(btn("🔎 По контрагенту", "mf:tx_find_cp")),
+                        new InlineKeyboardRow(btn("⬅️ Меню", "mf:cancel"))
+                ))
+                .build();
+    }
+
+    private InlineKeyboardMarkup transactionFindBackMenu() {
+        return InlineKeyboardMarkup.builder()
+                .keyboard(List.of(
+                        new InlineKeyboardRow(btn("⬅️ Назад", "mf:tx_find")),
+                        new InlineKeyboardRow(btn("🏠 Меню", "mf:cancel"))
+                ))
+                .build();
+    }
+
+    private InlineKeyboardMarkup transactionSearchResultsMenu(List<Transaction> results) {
+        List<InlineKeyboardRow> rows = new ArrayList<>();
+        for (Transaction t : results) {
+            rows.add(new InlineKeyboardRow(btn(truncate(transactionShortLabel(t), 64), "mf:tx:view:" + t.getId())));
+        }
+        rows.add(new InlineKeyboardRow(btn("⬅️ Назад", "mf:tx_find")));
+        return InlineKeyboardMarkup.builder().keyboard(rows).build();
+    }
+
+    private InlineKeyboardMarkup transactionViewMenu(Transaction t) {
+        List<InlineKeyboardRow> rows = new ArrayList<>();
+        if (t.getDirection() != com.moneyfirewall.domain.TransactionDirection.TRANSFER) {
+            rows.add(new InlineKeyboardRow(btn("✏️ Изменить категорию", "mf:tx:edit_cat:" + t.getId())));
+        }
+        rows.add(new InlineKeyboardRow(btn("⬅️ Назад", "mf:tx_find")));
+        return InlineKeyboardMarkup.builder().keyboard(rows).build();
+    }
+
+    private InlineKeyboardMarkup transactionEditCategoryMenu(UUID budgetId, CategoryKind kind, String txId) {
+        List<InlineKeyboardRow> rows = new ArrayList<>();
+        if (kind == CategoryKind.EXPENSE) {
+            Category cash = categoryService.ensureCash(budgetId);
+            rows.add(new InlineKeyboardRow(btn("🏧 Наличные (CASH)", "mf:tx:edit_cat_pick:" + cash.getId())));
+        }
+        for (Category p : categoryService.listParents(budgetId, kind)) {
+            if (CategoryService.CASH.equalsIgnoreCase(p.getName())) {
+                continue;
+            }
+            rows.add(new InlineKeyboardRow(btn(p.getName(), "mf:tx:edit_cat_pick:" + p.getId())));
+            for (Category c : categoryService.listChildren(budgetId, kind, p.getId())) {
+                rows.add(new InlineKeyboardRow(btn("— " + c.getName(), "mf:tx:edit_cat_pick:" + c.getId())));
+            }
+        }
+        rows.add(new InlineKeyboardRow(btn("➕ Новая категория", "mf:tx:edit_cat_newcat")));
+        rows.add(new InlineKeyboardRow(btn("⬅️ Назад", "mf:tx:view:" + txId)));
+        return InlineKeyboardMarkup.builder().keyboard(rows).build();
+    }
+
+    private InlineKeyboardMarkup transactionViewOnlyBackMenu(String txId) {
+        return InlineKeyboardMarkup.builder()
+                .keyboard(List.of(
+                        new InlineKeyboardRow(btn("⬅️ Назад", "mf:tx:view:" + txId))
+                ))
+                .build();
+    }
+
+    private String transactionShortLabel(Transaction t) {
+        String date = t.getOccurredAt().toString().substring(0, 10);
+        String dir = t.getDirection() == com.moneyfirewall.domain.TransactionDirection.INCOME ? "+"
+                : t.getDirection() == com.moneyfirewall.domain.TransactionDirection.EXPENSE ? "-" : "↔";
+        String cp = t.getCounterpartyRaw() == null ? "" : t.getCounterpartyRaw();
+        return date + " " + dir + formatAmount(t.getAmount()) + " " + t.getCurrency() + " " + cp;
+    }
+
+    private String transactionDetailsText(Transaction t) {
+        String dirLabel = t.getDirection() == com.moneyfirewall.domain.TransactionDirection.INCOME ? "Доход"
+                : t.getDirection() == com.moneyfirewall.domain.TransactionDirection.EXPENSE ? "Расход" : "Перевод";
+        String categoryLabel = t.getCategory() == null ? "без категории" : categoryService.displayName(t.getCategory());
+        String account = t.getAccount() == null ? "" : t.getAccount().getName();
+        String cp = t.getCounterpartyRaw() == null || t.getCounterpartyRaw().isBlank() ? "—" : t.getCounterpartyRaw();
+        return dirLabel + " " + formatAmount(t.getAmount()) + " " + t.getCurrency() + "\n"
+                + "Дата: " + t.getOccurredAt() + "\n"
+                + "Счёт: " + account + "\n"
+                + "Контрагент: " + cp + "\n"
+                + "Категория: " + categoryLabel;
     }
 
     private InlineKeyboardMarkup categoryAddKindMenu() {
@@ -2859,6 +3045,126 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         String msg = "✅ Категория изменена: " + categoryService.displayName(category)
                 + (recategorized > 0 ? "\nКатегории проставлены: " + recategorized : "");
         sender.sendText(chatId, msg, catRuleViewMenu(ruleId));
+    }
+
+    private void onTransactionFindMenu(long chatId, UUID userId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        conversationService.clear(userId);
+        sender.sendText(chatId, "Как искать транзакцию?", transactionFindMenu());
+    }
+
+    private void onTransactionFindIdStart(long chatId, UUID userId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        conversationService.set(userId, "tx_find", new HashMap<>(Map.of("step", "id")));
+        sender.sendText(chatId, "Введите ID транзакции", transactionFindBackMenu());
+    }
+
+    private void onTransactionFindCounterpartyStart(long chatId, UUID userId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        conversationService.set(userId, "tx_find", new HashMap<>(Map.of("step", "counterparty")));
+        sender.sendText(chatId, "Введите текст контрагента для поиска", transactionFindBackMenu());
+    }
+
+    private void onTransactionView(long chatId, UUID userId, String txId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        Transaction t;
+        try {
+            t = transactionService.findById(budgetId, UUID.fromString(txId)).orElse(null);
+        } catch (Exception e) {
+            t = null;
+        }
+        if (t == null) {
+            sender.sendText(chatId, "Транзакция не найдена", transactionFindMenu());
+            return;
+        }
+        sender.sendText(chatId, transactionDetailsText(t), transactionViewMenu(t));
+    }
+
+    private void onTransactionEditCategoryStart(long chatId, UUID userId, String txId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        if (!budgetService.isAdmin(budgetId, userId)) {
+            sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+            return;
+        }
+        Transaction t = transactionService.findById(budgetId, UUID.fromString(txId)).orElse(null);
+        if (t == null) {
+            sender.sendText(chatId, "Транзакция не найдена", transactionFindMenu());
+            return;
+        }
+        if (t.getDirection() == com.moneyfirewall.domain.TransactionDirection.TRANSFER) {
+            sender.sendText(chatId, "Нельзя задать категорию для перевода", transactionViewMenu(t));
+            return;
+        }
+        CategoryKind kind = t.getDirection() == com.moneyfirewall.domain.TransactionDirection.INCOME ? CategoryKind.INCOME : CategoryKind.EXPENSE;
+        conversationService.set(userId, "tx_edit_cat", new HashMap<>(Map.of("txId", txId, "kind", kind.name())));
+        sender.sendText(chatId, "Выбери новую категорию", transactionEditCategoryMenu(budgetId, kind, txId));
+    }
+
+    private void onTransactionEditCategoryNewCategory(long chatId, UUID userId) {
+        State st = conversationService.get(userId).orElse(null);
+        if (st == null || !"tx_edit_cat".equals(st.key())) {
+            sender.sendText(chatId, "Нет активного визарда", menuForUser(userId));
+            return;
+        }
+        String txId = st.payload().getOrDefault("txId", "").toString();
+        Map<String, Object> p = new HashMap<>(st.payload());
+        p.put("step", "newCategoryName");
+        conversationService.set(userId, "tx_edit_cat", p);
+        sender.sendText(chatId, "Введите название категории", transactionViewOnlyBackMenu(txId));
+    }
+
+    private void onTransactionEditCategoryPick(long chatId, UUID userId, String categoryId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            conversationService.clear(userId);
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        State st = conversationService.get(userId).orElse(null);
+        if (st == null || !"tx_edit_cat".equals(st.key())) {
+            sender.sendText(chatId, "Нет активного визарда", menuForUser(userId));
+            return;
+        }
+        String txId = st.payload().getOrDefault("txId", "").toString();
+        Category category = categoryService.findById(budgetId, UUID.fromString(categoryId)).orElse(null);
+        if (category == null) {
+            sender.sendText(chatId, "Категория не найдена", catRulesMenu());
+            return;
+        }
+        applyTransactionCategoryEdit(chatId, userId, budgetId, txId, category);
+    }
+
+    private void applyTransactionCategoryEdit(long chatId, UUID userId, UUID budgetId, String txId, Category category) {
+        Transaction t;
+        try {
+            t = transactionService.setCategory(budgetId, UUID.fromString(txId), category);
+        } catch (Exception e) {
+            conversationService.clear(userId);
+            sender.sendText(chatId, "Транзакция не найдена", transactionFindMenu());
+            return;
+        }
+        conversationService.clear(userId);
+        sender.sendText(chatId, "✅ Категория изменена: " + categoryService.displayName(category), transactionViewMenu(t));
     }
 
     private void onCategoryRuleDeleteConfirm(long chatId, UUID userId, String ruleId) {

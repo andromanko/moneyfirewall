@@ -60,6 +60,27 @@ public interface TransactionRepository extends JpaRepository<Transaction, UUID> 
     int deleteAllByImportSessionId(@Param("importSessionId") UUID importSessionId);
 
     @Query("""
+            select t from Transaction t
+            left join fetch t.category c
+            left join fetch c.parentCategory
+            left join fetch t.account
+            where t.id = :id and t.budget.id = :budgetId
+            """)
+    java.util.Optional<Transaction> findByIdAndBudgetId(@Param("id") UUID id, @Param("budgetId") UUID budgetId);
+
+    @Query("""
+            select t from Transaction t
+            left join fetch t.category c
+            left join fetch c.parentCategory
+            left join fetch t.account
+            where t.budget.id = :budgetId
+              and (lower(t.counterpartyRaw) like lower(concat('%', :query, '%'))
+                   or lower(t.counterpartyNormalized) like lower(concat('%', :query, '%')))
+            order by t.occurredAt desc
+            """)
+    List<Transaction> searchByCounterparty(@Param("budgetId") UUID budgetId, @Param("query") String query);
+
+    @Query("""
             select t.category.id, count(t) from Transaction t
             where t.budget.id = :budgetId
               and t.direction = com.moneyfirewall.domain.TransactionDirection.EXPENSE
