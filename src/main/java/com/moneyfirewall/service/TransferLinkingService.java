@@ -58,6 +58,18 @@ public class TransferLinkingService {
         return autoLinkInOccurredRange(budgetId, from, to, window, false);
     }
 
+    /**
+     * Rescans a wider [from, to) range (e.g. to catch up on historical transactions that predate
+     * a matching-logic fix) while keeping the pair-matching tightness (maxPairDelta) fixed and
+     * sane — a transfer's two legs are always posted close together in absolute time regardless
+     * of how long ago the transfer itself happened, so widening the search range must not also
+     * widen how far apart two candidate legs are allowed to be.
+     */
+    @Transactional
+    public int autoLink(UUID budgetId, Instant from, Instant to, Duration maxPairDelta) {
+        return autoLinkInOccurredRange(budgetId, from, to, maxPairDelta, false);
+    }
+
     @Transactional
     public int autoLinkAfterImport(UUID budgetId, Instant opsMinOccurredAt, Instant opsMaxOccurredAt) {
         Duration pad = Duration.ofMinutes(10);

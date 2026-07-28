@@ -913,7 +913,28 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             sender.sendText(chatId, "Нужна роль ADMIN");
             return;
         }
-        int linked = transferLinkingService.autoLink(budgetId, java.time.Duration.ofHours(48));
+        String a = arg == null ? "" : arg.trim();
+        int linked;
+        if (a.isBlank()) {
+            linked = transferLinkingService.autoLink(budgetId, java.time.Duration.ofHours(48));
+        } else {
+            Instant from;
+            if ("all".equalsIgnoreCase(a)) {
+                from = Instant.EPOCH;
+            } else {
+                long days;
+                try {
+                    days = Long.parseLong(a);
+                } catch (NumberFormatException e) {
+                    sender.sendText(chatId, "Пример: /transfer_autolink (48ч по умолчанию), /transfer_autolink 30 (дней в прошлое) или /transfer_autolink all (вся история)");
+                    return;
+                }
+                from = Instant.now().minus(java.time.Duration.ofDays(days));
+            }
+            // Search range widens, but pair-matching tightness stays fixed at 48h so distant,
+            // unrelated same-amount transactions across a wide historical rescan can't mismatch.
+            linked = transferLinkingService.autoLink(budgetId, from, Instant.now(), java.time.Duration.ofHours(48));
+        }
         sender.sendText(chatId, "Связано: " + linked);
     }
 
