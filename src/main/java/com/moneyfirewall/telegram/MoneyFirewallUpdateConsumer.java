@@ -27,6 +27,8 @@ import com.moneyfirewall.reporting.ReportTables;
 import com.moneyfirewall.service.UserService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
+import java.text.DecimalFormat;
+import java.text.DecimalFormatSymbols;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.YearMonth;
@@ -1081,8 +1083,8 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         ReportTables tables = reportService.build(budgetId, from, to);
 
         sender.sendText(chatId, "Предпросмотр " + label + "\n" +
-                "Доход: " + tables.incomeTotal().toPlainString() + " " + tables.currency() + "\n" +
-                "Расход: " + tables.expenseTotal().toPlainString() + " " + tables.currency() +
+                "Доход: " + formatAmount(tables.incomeTotal()) + " " + tables.currency() + "\n" +
+                "Расход: " + formatAmount(tables.expenseTotal()) + " " + tables.currency() +
                 (recategorized > 0 ? "\nКатегории проставлены: " + recategorized : "") +
                 (nicknamed > 0 ? "\nНикнеймы обновлены: " + nicknamed : ""));
 
@@ -2933,6 +2935,16 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         p.put("currency", currency);
         conversationService.set(userId, "expense_scan_save", p);
         sender.sendText(chatId, "Валюта: " + currency, receiptSaveMenu(p));
+    }
+
+    private static String formatAmount(BigDecimal amount) {
+        if (amount == null) {
+            return "0";
+        }
+        DecimalFormatSymbols symbols = new DecimalFormatSymbols(Locale.ROOT);
+        symbols.setGroupingSeparator(' ');
+        DecimalFormat df = new DecimalFormat("#,##0.##", symbols);
+        return df.format(amount);
     }
 
 }
