@@ -28,7 +28,7 @@ public class ExcelReportExporter {
             moneyStyle.setDataFormat(wb.createDataFormat().getFormat("# ##0.00"));
 
             XSSFSheet summarySheet = wb.createSheet("Summary");
-            writeSheet(summarySheet, t.summary(), null, yellowStyle, greenStyle, moneyStyle);
+            writeSheet(summarySheet, t.summary(), summaryRowStyle(wb, t.summary()), yellowStyle, greenStyle, moneyStyle);
 
             XSSFSheet byCategorySheet = wb.createSheet("ByCategory");
             writeSheet(byCategorySheet, t.byCategory(), byCategoryRowStyle(wb, t.byCategory()), yellowStyle, greenStyle, moneyStyle);
@@ -119,6 +119,26 @@ public class ExcelReportExporter {
         }
     }
 
+    private RowStyle summaryRowStyle(XSSFWorkbook wb, List<List<Object>> rows) {
+        if (rows.isEmpty()) {
+            return null;
+        }
+        CellStyle subtotal = wb.createCellStyle();
+        subtotal.setFillForegroundColor(IndexedColors.GREY_25_PERCENT.getIndex());
+        subtotal.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+        subtotal.setDataFormat(wb.createDataFormat().getFormat("# ##0.00"));
+        Font bold = wb.createFont();
+        bold.setBold(true);
+        subtotal.setFont(bold);
+
+        return cols -> {
+            if (cols.size() < 2 || !ReportService.BY_CATEGORY_SUBTOTAL.equals(String.valueOf(cols.get(1)))) {
+                return null;
+            }
+            return subtotal;
+        };
+    }
+
     private RowStyle byCategoryRowStyle(XSSFWorkbook wb, List<List<Object>> rows) {
         if (rows.isEmpty()) {
             return null;
@@ -131,11 +151,13 @@ public class ExcelReportExporter {
         CellStyle subtotal = wb.createCellStyle();
         subtotal.setFillForegroundColor(IndexedColors.GREY_25_PERCENT.getIndex());
         subtotal.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+        subtotal.setDataFormat(wb.createDataFormat().getFormat("# ##0.00"));
         Font bold = wb.createFont();
         bold.setBold(true);
         subtotal.setFont(bold);
 
         CellStyle subSubtotal = wb.createCellStyle();
+        subSubtotal.setDataFormat(wb.createDataFormat().getFormat("# ##0.00"));
         Font italic = wb.createFont();
         italic.setItalic(true);
         subSubtotal.setFont(italic);

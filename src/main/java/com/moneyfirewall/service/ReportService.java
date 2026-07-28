@@ -268,18 +268,43 @@ public class ReportService {
         catHeader.add("Итого");
         summary.add(catHeader);
 
-        categoryConvertedTotal.entrySet().stream()
-                .sorted(Map.Entry.<CategoryPair, BigDecimal>comparingByValue(Comparator.reverseOrder())
-                        .thenComparing(e -> e.getKey().category())
-                        .thenComparing(e -> e.getKey().subcategory()))
-                .forEach(e -> {
-                    List<Object> row = new ArrayList<>(List.of(e.getKey().category(), e.getKey().subcategory()));
-                    for (YearMonth ym : months) {
-                        row.add(categoryExpenseFormula(e.getKey().category(), e.getKey().subcategory(), ym));
-                    }
-                    row.add(totalFormula(summary.size() + 1, firstMonthCol, lastMonthCol));
-                    summary.add(row);
-                });
+        Map<String, BigDecimal> categoryTotals = new HashMap<>();
+        Map<String, List<Map.Entry<CategoryPair, BigDecimal>>> bySubcategory = new HashMap<>();
+        for (Map.Entry<CategoryPair, BigDecimal> e : categoryConvertedTotal.entrySet()) {
+            String category = e.getKey().category();
+            categoryTotals.merge(category, e.getValue(), BigDecimal::add);
+            bySubcategory.computeIfAbsent(category, k -> new ArrayList<>()).add(e);
+        }
+
+        List<String> categoriesSorted = categoryTotals.entrySet().stream()
+                .sorted(Map.Entry.<String, BigDecimal>comparingByValue(Comparator.reverseOrder())
+                        .thenComparing(Map.Entry::getKey))
+                .map(Map.Entry::getKey)
+                .toList();
+
+        for (String category : categoriesSorted) {
+            List<Map.Entry<CategoryPair, BigDecimal>> entries = bySubcategory.get(category);
+            entries.sort(Map.Entry.<CategoryPair, BigDecimal>comparingByValue(Comparator.reverseOrder())
+                    .thenComparing(e -> e.getKey().subcategory()));
+            for (Map.Entry<CategoryPair, BigDecimal> e : entries) {
+                List<Object> row = new ArrayList<>(List.of(e.getKey().category(), e.getKey().subcategory()));
+                for (YearMonth ym : months) {
+                    row.add(categoryExpenseFormula(e.getKey().category(), e.getKey().subcategory(), ym));
+                }
+                row.add(totalFormula(summary.size() + 1, firstMonthCol, lastMonthCol));
+                summary.add(row);
+            }
+            if (entries.size() > 1) {
+                // Parent rollup: sums every subcategory row plus any transaction categorized
+                // directly on the parent (blank subcategory), via a category-only SUMIFS.
+                List<Object> row = new ArrayList<>(List.of(category, BY_CATEGORY_SUBTOTAL));
+                for (YearMonth ym : months) {
+                    row.add(categoryTotalFormula(category, ym));
+                }
+                row.add(totalFormula(summary.size() + 1, firstMonthCol, lastMonthCol));
+                summary.add(row);
+            }
+        }
         return summary;
     }
 
@@ -337,6 +362,15 @@ public class ReportService {
     private static FormulaCell categoryExpenseFormula(String category, String subcategory, YearMonth ym) {
         return new FormulaCell("SUMIFS(" + txRange(TX_COL_AMOUNT_CONVERTED) + "," + txRange(TX_COL_CATEGORY) + ",\"" + escapeFormulaString(category)
                 + "\"," + txRange(TX_COL_SUBCATEGORY) + ",\"" + escapeFormulaString(subcategory) + "\"," + txRange(TX_COL_DIRECTION) + ",\"Расход\","
+                + txRange(TX_COL_MONTH) + ",\"" + monthKey(ym) + "\")");
+    }
+
+    /** Category-only SUMIFS (no subcategory filter) — rolls up every subcategory plus any
+     * transaction categorized directly on the parent, with no risk of double-counting since a
+     * transaction's category/subcategory pair is unique per row. */
+    private static FormulaCell categoryTotalFormula(String category, YearMonth ym) {
+        return new FormulaCell("SUMIFS(" + txRange(TX_COL_AMOUNT_CONVERTED) + "," + txRange(TX_COL_CATEGORY) + ",\"" + escapeFormulaString(category)
+                + "\"," + txRange(TX_COL_DIRECTION) + ",\"Расход\","
                 + txRange(TX_COL_MONTH) + ",\"" + monthKey(ym) + "\")");
     }
 
