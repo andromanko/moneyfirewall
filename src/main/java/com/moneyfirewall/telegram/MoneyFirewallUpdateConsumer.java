@@ -883,7 +883,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 .append(" <= ")
                 .append(r.getPattern())
                 .append("\n"));
-        sender.sendText(chatId, sb.toString().trim());
+        sender.sendText(chatId, truncate(sb.toString().trim(), 4000));
     }
 
     private void onCategoryRuleDelete(long chatId, UUID userId, String arg) {
@@ -2773,17 +2773,6 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         return c.getKind() + " " + categoryName + " <= " + match;
     }
 
-    private String categoryRulesListText(List<CategoryRule> rules) {
-        if (rules.isEmpty()) {
-            return "Правил пока нет";
-        }
-        StringBuilder sb = new StringBuilder("Правила категорий:\n");
-        for (int i = 0; i < rules.size(); i++) {
-            sb.append(i + 1).append(". ").append(categoryRuleLabel(rules.get(i))).append('\n');
-        }
-        return sb.toString().trim();
-    }
-
     private static String truncate(String s, int max) {
         if (s.length() <= max) {
             return s;
@@ -2947,7 +2936,8 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return;
         }
         List<CategoryRule> rules = categoryRuleService.list(budgetId);
-        sender.sendText(chatId, categoryRulesListText(rules), catRulesListMenu(rules));
+        String header = rules.isEmpty() ? "Правил пока нет" : "Правила категорий (" + rules.size() + "). Нажми на правило, чтобы посмотреть подробности";
+        sender.sendText(chatId, header, catRulesListMenu(rules));
     }
 
     private void onCategoryRuleView(long chatId, UUID userId, String ruleId) {
@@ -3210,7 +3200,8 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return;
         }
         List<CategoryRule> rules = categoryRuleService.list(budgetId);
-        sender.sendText(chatId, "Удалено\n\n" + categoryRulesListText(rules), catRulesListMenu(rules));
+        String header = rules.isEmpty() ? "Удалено. Правил пока нет" : "Удалено. Правила категорий (" + rules.size() + ")";
+        sender.sendText(chatId, header, catRulesListMenu(rules));
     }
 
     private void onCategoryAddStart(long chatId, UUID userId) {
