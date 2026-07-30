@@ -1518,6 +1518,16 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return true;
         }
 
+        if ("cash_expense".equals(st.key()) && "counterparty".equals(st.payload().getOrDefault("step", "").toString())) {
+            String name = text == null ? "" : text.trim();
+            Map<String, Object> p = new HashMap<>(st.payload());
+            p.put("counterparty", name.isBlank() ? null : name);
+            p.put("step", "date");
+            conversationService.set(userId, "cash_expense", p);
+            sender.sendText(chatId, "Дата операции", cashDateMenu("cash_expense"));
+            return true;
+        }
+
         if ("expense_scan_shop".equals(st.key())) {
             UUID budgetId = budgetService.getActiveBudgetId(userId);
             if (budgetId == null) {
@@ -1940,6 +1950,12 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                     return;
                 }
                 payload.put("account", accountName);
+                if ("cash_expense".equals(key)) {
+                    payload.put("step", "counterparty");
+                    conversationService.set(userId, key, payload);
+                    sender.sendText(chatId, "Наименование платежа (опционально)", expenseManualShopMenu(key));
+                    return;
+                }
                 payload.put("step", "date");
                 conversationService.set(userId, key, payload);
                 sender.sendText(chatId, "Дата операции", cashDateMenu(key));
@@ -2075,7 +2091,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 return;
             }
             payload.put("counterparty", cp);
-            if ("income".equals(key) && isIncomeCompensation(budgetId, payload)) {
+            if (("income".equals(key) && isIncomeCompensation(budgetId, payload)) || "cash_expense".equals(key)) {
                 payload.put("step", "date");
                 conversationService.set(userId, key, payload);
                 sender.sendText(chatId, "Дата операции", cashDateMenu(key));
@@ -3564,8 +3580,9 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
     private void createCashExpense(UUID budgetId, UUID userId, Instant now, BigDecimal amount, String currency, Map<String, Object> payload) {
         String account = payload.get("account").toString();
         String categoryId = payload.get("categoryId").toString();
+        String counterparty = payload.get("counterparty") == null ? null : payload.get("counterparty").toString();
         if ("misc".equals(categoryId)) {
-            transactionService.createExpense(budgetId, userId, now, amount, currency, account, "Прочее", null, null);
+            transactionService.createExpense(budgetId, userId, now, amount, currency, account, "Прочее", counterparty, null);
             return;
         }
         transactionService.createExpenseByCategoryId(
@@ -3576,7 +3593,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 currency,
                 account,
                 UUID.fromString(categoryId),
-                null,
+                counterparty,
                 null
         );
     }
