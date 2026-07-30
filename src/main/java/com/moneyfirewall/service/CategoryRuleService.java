@@ -195,6 +195,16 @@ public class CategoryRuleService {
                 }
             }
             Category matched = matchTransaction(budgetId, t, oncePerMonthSlots);
+            if (matched == null && t.getDirection() == TransactionDirection.INCOME) {
+                Category refundCategory = matchRefundExpenseCategory(budgetId, t, oncePerMonthSlots);
+                if (refundCategory != null) {
+                    t.setDirection(TransactionDirection.EXPENSE);
+                    t.setAmount(t.getAmount().negate());
+                    t.setCategory(refundCategory);
+                    updated++;
+                    continue;
+                }
+            }
             if (matched == null && t.getDirection() == TransactionDirection.EXPENSE
                     && categoryService.isMtbankMinskOperation(t.getCounterpartyRaw())) {
                 matched = categoryService.ensureMtbankMinskCategory(budgetId);
@@ -209,6 +219,30 @@ public class CategoryRuleService {
             reserveOncePerMonthSlot(budgetId, t, matched, oncePerMonthSlots);
         }
         return updated;
+    }
+
+    /**
+     * An INCOME transaction that doesn't match any income rule but DOES match an existing
+     * expense-category rule (e.g. a merchant refund) is treated as money coming back for that
+     * expense, not as new income — the caller flips it to a negative EXPENSE so every existing
+     * category/month SUMIFS formula nets it out automatically, with no separate "refund" concept
+     * needed anywhere downstream.
+     */
+    private Category matchRefundExpenseCategory(UUID budgetId, Transaction t, Set<String> oncePerMonthSlots) {
+        String counterparty = t.getCounterpartyNormalized();
+        if (counterparty == null || counterparty.isBlank()) {
+            counterparty = t.getCounterpartyRaw();
+        }
+        for (CategoryRule r : ruleRepository.findAllByBudgetId(budgetId)) {
+            Category c = r.getCategory();
+            if (c == null || c.getKind() != CategoryKind.EXPENSE) {
+                continue;
+            }
+            if (matchesRule(budgetId, r, t, counterparty, oncePerMonthSlots)) {
+                return c;
+            }
+        }
+        return null;
     }
 
     private boolean matchesRule(
