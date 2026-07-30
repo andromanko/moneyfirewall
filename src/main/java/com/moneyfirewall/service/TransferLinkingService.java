@@ -254,9 +254,14 @@ public class TransferLinkingService {
             if (isOutgoingTransferLike(t) || !topupLike(summaryText(t))) {
                 continue;
             }
+            boolean creditsOwnAccount = creditsAccountWorded(summaryText(t));
             boolean hasSendingCounterpart = expenses.stream().anyMatch(other ->
                     !other.getId().equals(t.getId())
-                            && isOutgoingTransferLike(other)
+                            // Either the counterpart is explicitly worded as the sending leg, or
+                            // this leg is explicitly an account credit — in which case an
+                            // opposite-account twin of the same amount can only be the sender.
+                            && (isOutgoingTransferLike(other)
+                                || (creditsOwnAccount && !creditsAccountWorded(summaryText(other))))
                             && other.getCurrency().equalsIgnoreCase(t.getCurrency())
                             && other.getAmount().compareTo(t.getAmount()) == 0
                             && !other.getAccount().getId().equals(t.getAccount().getId())
@@ -271,7 +276,19 @@ public class TransferLinkingService {
 
     private boolean isOutgoingTransferLike(Transaction t) {
         String s = summaryText(t);
-        return s.contains("mp2p") || s.contains("mp2b");
+        if (!s.contains("mp2p") && !s.contains("mp2b")) {
+            return false;
+        }
+        // MP2P/MP2B tag *both* sides of a P2P transfer, so the marker alone can't decide
+        // direction. When the text also says the money is crediting an account ("Пополнение
+        // счета BY82MTBK..."), this is the receiving leg — and the statement's own debit flag,
+        // which the importer already honours, had it right. Overriding it here would corrupt a
+        // correctly-imported income into an expense and leave the pair unlinkable.
+        return !creditsAccountWorded(s);
+    }
+
+    private boolean creditsAccountWorded(String s) {
+        return s.contains("пополнение счета") || s.contains("пополнение счёта");
     }
 
     private boolean outLike(String s) {
