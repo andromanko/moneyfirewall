@@ -37,6 +37,10 @@ public class Category {
     @Column(name = "kind", nullable = false)
     private CategoryKind kind;
 
+    /** Currency/crypto a savings subcategory is held in; null for every other category. */
+    @Column(name = "currency")
+    private String currency;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -78,6 +82,14 @@ public class Category {
 
     public void setKind(CategoryKind kind) {
         this.kind = kind;
+    }
+
+    public String getCurrency() {
+        return currency;
+    }
+
+    public void setCurrency(String currency) {
+        this.currency = currency;
     }
 
     public Instant getCreatedAt() {

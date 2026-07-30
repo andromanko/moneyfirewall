@@ -22,6 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class CategoryService {
     public static final String CASH = "CASH";
+    public static final String SAVINGS = "Накопления";
     public static final String MTBANK_MINSK_CATEGORY = SimplePdfStatementParser.MTBANK_MINSK_COUNTERPARTY;
 
     private final CategoryRepository categoryRepository;
@@ -100,6 +101,35 @@ public class CategoryService {
     @Transactional(readOnly = true)
     public boolean isCash(Category category) {
         return category != null && CASH.equalsIgnoreCase(category.getName()) && category.getParentCategory() == null;
+    }
+
+    @Transactional
+    public Category ensureSavings(UUID budgetId) {
+        return ensure(budgetId, CategoryKind.EXPENSE, SAVINGS);
+    }
+
+    /** True for the "Накопления" root itself and for anything nested under it. */
+    @Transactional(readOnly = true)
+    public boolean isSavings(Category category) {
+        if (category == null) {
+            return false;
+        }
+        Category root = category.getParentCategory() == null ? category : category.getParentCategory();
+        return SAVINGS.equalsIgnoreCase(root.getName());
+    }
+
+    @Transactional(readOnly = true)
+    public List<Category> listSavingsSubcategories(UUID budgetId) {
+        return categoryRepository.findParentByBudgetIdAndKindAndName(budgetId, CategoryKind.EXPENSE, SAVINGS)
+                .map(root -> listChildren(budgetId, CategoryKind.EXPENSE, root.getId()))
+                .orElseGet(List::of);
+    }
+
+    @Transactional
+    public Category setCurrency(UUID budgetId, UUID categoryId, String currency) {
+        Category c = categoryRepository.findByIdAndBudgetId(categoryId, budgetId).orElseThrow();
+        c.setCurrency(currency == null || currency.isBlank() ? null : currency.trim().toUpperCase(Locale.ROOT));
+        return categoryRepository.save(c);
     }
 
     @Transactional(readOnly = true)

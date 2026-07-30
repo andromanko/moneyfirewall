@@ -1375,6 +1375,33 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return true;
         }
 
+        if ("savings_currency".equals(st.key())) {
+            UUID budgetId = budgetService.getActiveBudgetId(userId);
+            if (budgetId == null) {
+                conversationService.clear(userId);
+                sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+                return true;
+            }
+            if (!budgetService.isAdmin(budgetId, userId)) {
+                conversationService.clear(userId);
+                sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+                return true;
+            }
+            String categoryId = st.payload().getOrDefault("categoryId", "").toString();
+            Category c = savingsSubcategory(chatId, budgetId, categoryId);
+            if (c == null) {
+                conversationService.clear(userId);
+                return true;
+            }
+            String code = text == null ? "" : text.trim();
+            if (!code.matches("[A-Za-z0-9]{2,12}")) {
+                sender.sendText(chatId, "Код валюты: 2-12 латинских букв или цифр (например BTC)", categoryViewOnlyBackMenu(c));
+                return true;
+            }
+            applySavingsCurrency(chatId, userId, budgetId, c, code);
+            return true;
+        }
+
         if ("category_rename".equals(st.key())) {
             UUID budgetId = budgetService.getActiveBudgetId(userId);
             if (budgetId == null) {
@@ -1825,6 +1852,29 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         if (data.startsWith("mf:cat:rename:")) {
             String categoryId = data.substring("mf:cat:rename:".length());
             onCategoryRenameStart(chatId, user.getId(), categoryId);
+            return;
+        }
+
+        if (data.startsWith("mf:cat:cur_set:")) {
+            String rest = data.substring("mf:cat:cur_set:".length());
+            int sep = rest.lastIndexOf(':');
+            if (sep <= 0) {
+                sender.sendText(chatId, "Ошибка", menuForUser(user.getId()));
+                return;
+            }
+            onSavingsCurrencySet(chatId, user.getId(), rest.substring(0, sep), rest.substring(sep + 1));
+            return;
+        }
+
+        if (data.startsWith("mf:cat:cur_text:")) {
+            String categoryId = data.substring("mf:cat:cur_text:".length());
+            onSavingsCurrencyTextStart(chatId, user.getId(), categoryId);
+            return;
+        }
+
+        if (data.startsWith("mf:cat:cur:")) {
+            String categoryId = data.substring("mf:cat:cur:".length());
+            onSavingsCurrencyMenu(chatId, user.getId(), categoryId);
             return;
         }
 
@@ -2681,9 +2731,31 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         if (c.getParentCategory() == null) {
             rows.add(new InlineKeyboardRow(btn("➕ Добавить подкатегорию", "mf:cat:add_child:" + c.getId())));
         }
+        // Only savings subcategories are held in a specific currency/crypto.
+        if (c.getParentCategory() != null && categoryService.isSavings(c)) {
+            rows.add(new InlineKeyboardRow(btn("💱 Валюта накоплений", "mf:cat:cur:" + c.getId())));
+        }
         rows.add(new InlineKeyboardRow(btn("✏️ Переименовать", "mf:cat:rename:" + c.getId())));
         rows.add(new InlineKeyboardRow(btn("🗑️ Удалить", "mf:cat:del:" + c.getId())));
         rows.add(new InlineKeyboardRow(btn("⬅️ Назад", "mf:cat:list_kind:" + c.getKind().name())));
+        return InlineKeyboardMarkup.builder().keyboard(rows).build();
+    }
+
+    private InlineKeyboardMarkup savingsCurrencyMenu(Category c) {
+        List<InlineKeyboardButton> buttons = new ArrayList<>();
+        for (String cur : List.of("BYN", "USD", "EUR", "RUB", "BTC", "ETH", "USDT", "XAU")) {
+            String label = cur.equalsIgnoreCase(c.getCurrency()) ? cur + " ✓" : cur;
+            buttons.add(btn(label, "mf:cat:cur_set:" + c.getId() + ":" + cur));
+        }
+        List<InlineKeyboardRow> rows = new ArrayList<>();
+        for (int i = 0; i < buttons.size(); i += 4) {
+            rows.add(new InlineKeyboardRow(buttons.subList(i, Math.min(i + 4, buttons.size()))));
+        }
+        rows.add(new InlineKeyboardRow(btn("✍️ Ввести вручную", "mf:cat:cur_text:" + c.getId())));
+        if (c.getCurrency() != null) {
+            rows.add(new InlineKeyboardRow(btn("✖️ Убрать валюту", "mf:cat:cur_set:" + c.getId() + ":none")));
+        }
+        rows.add(new InlineKeyboardRow(btn("⬅️ Назад", "mf:cat:view:" + c.getId())));
         return InlineKeyboardMarkup.builder().keyboard(rows).build();
     }
 
@@ -3402,6 +3474,9 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         }
         sb.append(categoryService.displayName(c)).append("\n");
         sb.append("Операций: ").append(txCount).append(" | Правил: ").append(ruleCount);
+        if (c.getParentCategory() != null && categoryService.isSavings(c)) {
+            sb.append("\nВалюта накоплений: ").append(c.getCurrency() == null ? "не задана" : c.getCurrency());
+        }
         if (c.getParentCategory() == null) {
             sb.append(" | Подкатегорий: ").append(children.size());
             if (!children.isEmpty()) {
@@ -3412,6 +3487,84 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             }
         }
         sender.sendText(chatId, sb.toString().stripTrailing(), categoryViewMenu(c, children));
+    }
+
+    private void onSavingsCurrencyMenu(long chatId, UUID userId, String categoryId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        Category c = savingsSubcategory(chatId, budgetId, categoryId);
+        if (c == null) {
+            return;
+        }
+        String current = c.getCurrency() == null ? "не задана" : c.getCurrency();
+        sender.sendText(chatId, categoryService.displayName(c) + "\nТекущая валюта: " + current
+                + "\n\nВыбери валюту или криптовалюту накоплений", savingsCurrencyMenu(c));
+    }
+
+    private void onSavingsCurrencySet(long chatId, UUID userId, String categoryId, String currency) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        if (!budgetService.isAdmin(budgetId, userId)) {
+            sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+            return;
+        }
+        Category c = savingsSubcategory(chatId, budgetId, categoryId);
+        if (c == null) {
+            return;
+        }
+        applySavingsCurrency(chatId, userId, budgetId, c, "none".equalsIgnoreCase(currency) ? null : currency);
+    }
+
+    private void onSavingsCurrencyTextStart(long chatId, UUID userId, String categoryId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        if (!budgetService.isAdmin(budgetId, userId)) {
+            sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+            return;
+        }
+        Category c = savingsSubcategory(chatId, budgetId, categoryId);
+        if (c == null) {
+            return;
+        }
+        conversationService.set(userId, "savings_currency", new HashMap<>(Map.of("categoryId", categoryId)));
+        sender.sendText(chatId, "Введите код валюты или криптовалюты (например BTC, ETH, USDT)", categoryViewOnlyBackMenu(c));
+    }
+
+    private void applySavingsCurrency(long chatId, UUID userId, UUID budgetId, Category c, String currency) {
+        Category saved = categoryService.setCurrency(budgetId, c.getId(), currency);
+        conversationService.clear(userId);
+        String msg = saved.getCurrency() == null
+                ? "✅ Валюта накоплений убрана"
+                : "✅ Валюта накоплений: " + saved.getCurrency();
+        sendCategoryView(chatId, budgetId, saved, msg);
+    }
+
+    /** Resolves a savings *subcategory*, messaging the user and returning null when it isn't one. */
+    private Category savingsSubcategory(long chatId, UUID budgetId, String categoryId) {
+        Category c;
+        try {
+            c = categoryService.findById(budgetId, UUID.fromString(categoryId)).orElse(null);
+        } catch (Exception e) {
+            c = null;
+        }
+        if (c == null) {
+            sender.sendText(chatId, "Категория не найдена", catRulesMenu());
+            return null;
+        }
+        if (c.getParentCategory() == null || !categoryService.isSavings(c)) {
+            sender.sendText(chatId, "Валюта задаётся только для подкатегорий накоплений", catRulesMenu());
+            return null;
+        }
+        return c;
     }
 
     private void onCategoryRenameStart(long chatId, UUID userId, String categoryId) {

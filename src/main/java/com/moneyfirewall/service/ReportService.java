@@ -9,6 +9,7 @@ import com.moneyfirewall.reporting.ColoredCell;
 import com.moneyfirewall.reporting.FormulaCell;
 import com.moneyfirewall.reporting.ReportTables;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.YearMonth;
@@ -16,6 +17,7 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -30,6 +32,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class ReportService {
     public static final String BY_CATEGORY_SUBTOTAL = "ИТОГО";
     public static final String BY_SUBCATEGORY_SUBTOTAL = "Подытог";
+    public static final String SAVINGS_BLOCK_TITLE = "Накопления";
     private static final String FEE_CATEGORY_NAME = "Комиссии";
     private static final String FEE_NICKNAME = "FEE";
     /** Bounded row count used for cross-sheet SUMIFS ranges instead of whole-column references,
@@ -54,19 +57,22 @@ public class ReportService {
     private final MerchantAliasService merchantAliasService;
     private final BudgetService budgetService;
     private final NbrbExchangeRateService nbrbExchangeRateService;
+    private final SavingsRateService savingsRateService;
 
     public ReportService(
             TransactionRepository transactionRepository,
             CategoryService categoryService,
             MerchantAliasService merchantAliasService,
             BudgetService budgetService,
-            NbrbExchangeRateService nbrbExchangeRateService
+            NbrbExchangeRateService nbrbExchangeRateService,
+            SavingsRateService savingsRateService
     ) {
         this.transactionRepository = transactionRepository;
         this.categoryService = categoryService;
         this.merchantAliasService = merchantAliasService;
         this.budgetService = budgetService;
         this.nbrbExchangeRateService = nbrbExchangeRateService;
+        this.savingsRateService = savingsRateService;
     }
 
     @Transactional(readOnly = true)
@@ -83,6 +89,8 @@ public class ReportService {
         // Converted-to-default-currency accumulators, used only to decide Summary's row order and
         // the Telegram preview totals; the sheet's own numbers come from live formulas.
         Map<CategoryPair, BigDecimal> categoryConvertedTotal = new HashMap<>();
+        // Keyed by savings subcategory name ("" for a deposit booked straight on the root).
+        Map<String, BigDecimal> savingsConvertedTotal = new TreeMap<>();
         BigDecimal incomeTotal = BigDecimal.ZERO;
         BigDecimal expenseTotal = BigDecimal.ZERO;
         Set<String> monthKeysSeen = new TreeSet<>();
@@ -116,7 +124,11 @@ public class ReportService {
                 if (t.getDirection() == TransactionDirection.INCOME) {
                     incomeTotal = incomeTotal.add(converted.numericAmount());
                 } else if (t.getDirection() == TransactionDirection.EXPENSE) {
-                    if (!categoryService.isCash(category)) {
+                    // Savings deposits are money set aside, not spent: they stay out of the
+                    // expense total and the Summary category breakdown, and get their own block.
+                    if (categoryService.isSavings(category)) {
+                        savingsConvertedTotal.merge(cols.subcategory(), converted.numericAmount(), BigDecimal::add);
+                    } else if (!categoryService.isCash(category)) {
                         expenseTotal = expenseTotal.add(converted.numericAmount());
                         categoryConvertedTotal.merge(new CategoryPair(cols.category(), cols.subcategory()), converted.numericAmount(), BigDecimal::add);
 
@@ -157,7 +169,8 @@ public class ReportService {
         }
 
         List<YearMonth> months = monthRange(from, to);
-        List<List<Object>> summary = buildSummarySheet(months, categoryConvertedTotal);
+        List<List<Object>> summary = buildSummarySheet(
+                months, categoryConvertedTotal, savingsRows(budgetId, savingsConvertedTotal, defaultCurrency), defaultCurrency);
 
         List<List<Object>> catRows = buildByCategorySheet(byCategoryAndCounterparty);
 
@@ -168,6 +181,43 @@ public class ReportService {
                 .forEach(e -> memberRows.add(List.of(e.getKey(), e.getValue())));
 
         return new ReportTables(summary, catRows, memberRows, txRows, incomeTotal, expenseTotal, defaultCurrency);
+    }
+
+    /**
+     * Pairs each savings subcategory's accumulated deposits with the currency it is held in, and
+     * restates the total in that currency at today's rate. Subcategories that exist but saw no
+     * deposits in the period are still listed (with a zero total) so the block mirrors the
+     * configured savings structure rather than only what happened to move this month.
+     */
+    private List<SavingsRow> savingsRows(UUID budgetId, Map<String, BigDecimal> savingsConvertedTotal, String defaultCurrency) {
+        Map<String, String> currencyBySubcategory = new LinkedHashMap<>();
+        for (Category c : categoryService.listSavingsSubcategories(budgetId)) {
+            currencyBySubcategory.put(c.getName(), c.getCurrency());
+        }
+        // Include any subcategory that only shows up in the data (e.g. renamed/deleted since).
+        for (String subcategory : savingsConvertedTotal.keySet()) {
+            if (!subcategory.isBlank()) {
+                currencyBySubcategory.putIfAbsent(subcategory, null);
+            }
+        }
+
+        List<SavingsRow> rows = new ArrayList<>();
+        currencyBySubcategory.forEach((subcategory, currency) -> {
+            BigDecimal total = savingsConvertedTotal.getOrDefault(subcategory, BigDecimal.ZERO);
+            rows.add(new SavingsRow(subcategory, currency, total, amountInAsset(total, currency, defaultCurrency)));
+        });
+        BigDecimal rootTotal = savingsConvertedTotal.get("");
+        if (rootTotal != null && rootTotal.signum() != 0) {
+            rows.add(new SavingsRow("", null, rootTotal, null));
+        }
+        return rows;
+    }
+
+    private BigDecimal amountInAsset(BigDecimal totalInDefault, String currency, String defaultCurrency) {
+        if (currency == null || currency.isBlank() || totalInDefault.signum() == 0) {
+            return null;
+        }
+        return savingsRateService.convertToAsset(totalInDefault, currency, defaultCurrency).orElse(null);
     }
 
     private record ConvertedCells(Object rateCell, Object amountCell, BigDecimal numericAmount) {
@@ -240,6 +290,15 @@ public class ReportService {
     }
 
     static List<List<Object>> buildSummarySheet(List<YearMonth> months, Map<CategoryPair, BigDecimal> categoryConvertedTotal) {
+        return buildSummarySheet(months, categoryConvertedTotal, List.of(), "");
+    }
+
+    static List<List<Object>> buildSummarySheet(
+            List<YearMonth> months,
+            Map<CategoryPair, BigDecimal> categoryConvertedTotal,
+            List<SavingsRow> savingsRows,
+            String defaultCurrency
+    ) {
         List<List<Object>> summary = new ArrayList<>();
         int firstMonthCol = 2; // column C (0-based index 2)
         int lastMonthCol = firstMonthCol + months.size() - 1;
@@ -305,7 +364,79 @@ public class ReportService {
                 summary.add(row);
             }
         }
+
+        appendSavingsBlock(summary, months, savingsRows, defaultCurrency, firstMonthCol, lastMonthCol);
         return summary;
+    }
+
+    /**
+     * Savings get their own block rather than a line in the category breakdown: each subcategory
+     * shows its per-month/total deposits in the report currency (live SUMIFS, same as every other
+     * figure) plus a static snapshot of what that total is worth in the subcategory's own
+     * currency/crypto at today's rate.
+     */
+    private static void appendSavingsBlock(
+            List<List<Object>> summary,
+            List<YearMonth> months,
+            List<SavingsRow> savingsRows,
+            String defaultCurrency,
+            int firstMonthCol,
+            int lastMonthCol
+    ) {
+        if (savingsRows.isEmpty()) {
+            return;
+        }
+        summary.add(List.of());
+        List<Object> header = new ArrayList<>(List.of(SAVINGS_BLOCK_TITLE, "Валюта"));
+        for (YearMonth ym : months) {
+            header.add(monthHeader(ym));
+        }
+        header.add("Итого " + defaultCurrency);
+        header.add("В валюте накоплений");
+        summary.add(header);
+
+        for (SavingsRow r : savingsRows) {
+            String label = r.subcategory() == null || r.subcategory().isBlank() ? "(без подкатегории)" : r.subcategory();
+            List<Object> row = new ArrayList<>();
+            row.add(label);
+            row.add(r.currency() == null ? "" : r.currency());
+            for (YearMonth ym : months) {
+                row.add(savingsExpenseFormula(r.subcategory(), ym));
+            }
+            row.add(totalFormula(summary.size() + 1, firstMonthCol, lastMonthCol));
+            // Rendered as text, not a number: crypto amounts need far more decimals than the
+            // sheet-wide money format ("# ##0.00") would keep, which would show BTC as 0.00.
+            row.add(formatAssetAmount(r.amountInOwnCurrency()));
+            summary.add(row);
+        }
+
+        List<Object> totalRow = new ArrayList<>(List.of(SAVINGS_BLOCK_TITLE, BY_CATEGORY_SUBTOTAL));
+        for (YearMonth ym : months) {
+            totalRow.add(categoryTotalFormula(CategoryService.SAVINGS, ym));
+        }
+        totalRow.add(totalFormula(summary.size() + 1, firstMonthCol, lastMonthCol));
+        summary.add(totalRow);
+    }
+
+    private static String formatAssetAmount(BigDecimal amount) {
+        if (amount == null) {
+            return "н/д";
+        }
+        BigDecimal stripped = amount.stripTrailingZeros();
+        if (stripped.scale() < 2) {
+            stripped = stripped.setScale(2, RoundingMode.HALF_UP);
+        }
+        return stripped.toPlainString();
+    }
+
+    private static FormulaCell savingsExpenseFormula(String subcategory, YearMonth ym) {
+        return categoryExpenseFormula(CategoryService.SAVINGS, subcategory == null ? "" : subcategory, ym);
+    }
+
+    /**
+     * @param amountInOwnCurrency null when no rate could be resolved for {@code currency}.
+     */
+    public record SavingsRow(String subcategory, String currency, BigDecimal totalInDefault, BigDecimal amountInOwnCurrency) {
     }
 
     private static List<Object> metricRow(String label, int rowNumber, List<YearMonth> months, java.util.function.Function<YearMonth, FormulaCell> formulaFn, int firstMonthCol, int lastMonthCol) {
@@ -347,7 +478,8 @@ public class ReportService {
 
     private static FormulaCell expenseFormula(YearMonth ym) {
         return new FormulaCell("SUMIFS(" + txRange(TX_COL_AMOUNT_CONVERTED) + "," + txRange(TX_COL_DIRECTION) + ",\"Расход\","
-                + txRange(TX_COL_MONTH) + ",\"" + monthKey(ym) + "\"," + txRange(TX_COL_CATEGORY) + ",\"<>CASH\")");
+                + txRange(TX_COL_MONTH) + ",\"" + monthKey(ym) + "\"," + txRange(TX_COL_CATEGORY) + ",\"<>CASH\","
+                + txRange(TX_COL_CATEGORY) + ",\"<>" + escapeFormulaString(CategoryService.SAVINGS) + "\")");
     }
 
     private static FormulaCell feesFormula(YearMonth ym) {
@@ -533,6 +665,11 @@ public class ReportService {
         for (int r = blockStart; r < summaryRows.size(); r++) {
             List<Object> row = summaryRows.get(r);
             Object subcategory = row.size() > 1 ? row.get(1) : null;
+            // The savings block that follows has its own header and its own ИТОГО row; grouping
+            // across it would fold that header away too.
+            if (!row.isEmpty() && SAVINGS_BLOCK_TITLE.equals(row.getFirst()) && "Валюта".equals(String.valueOf(subcategory))) {
+                break;
+            }
             if (BY_CATEGORY_SUBTOTAL.equals(String.valueOf(subcategory))) {
                 if (blockStart <= r - 1) {
                     ranges.add(new RowRange(blockStart, r - 1, 1));

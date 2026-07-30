@@ -25,6 +25,12 @@ moneyfirewall:
   google:
     serviceAccountJson: ${GOOGLE_SERVICE_ACCOUNT_JSON:}
     spreadsheetPrefix: ${GOOGLE_SHEETS_PREFIX:MoneyFirewall}
+  rates:
+    savings:
+      priceUrl: ${SAVINGS_RATE_PRICE_URL:https://api-adapter.dzengi.com/api/v2/ticker/24hr?symbol={symbol}}
+      symbol: ${SAVINGS_RATE_SYMBOL:{base}/{quote}}
+      priceField: ${SAVINGS_RATE_PRICE_FIELD:lastPrice}
+      quoteCurrency: ${SAVINGS_RATE_QUOTE_CURRENCY:USD}
 
 logging:
   level:
