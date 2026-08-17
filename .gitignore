@@ -37,3 +37,6 @@ out/
 
 *.swp
 *.swo
+
+bin/
+.serena/
