@@ -321,13 +321,15 @@ public class ReportService {
             header.add(monthHeader(ym));
         }
         header.add("Итого");
+        header.add("В среднем в месяц");
         summary.add(header);
 
         int incomeRow = summary.size() + 1;
         summary.add(metricRow("Доход", incomeRow, months, ReportService::incomeFormula, firstMonthCol, lastMonthCol));
         int expenseRow = summary.size() + 1;
         summary.add(metricRow("Расход", expenseRow, months, ReportService::expenseFormula, firstMonthCol, lastMonthCol));
-        summary.add(netRow(incomeRow, expenseRow, months, firstMonthCol, totalCol));
+        int netRowNumber = summary.size() + 1;
+        summary.add(netRow(incomeRow, expenseRow, netRowNumber, months, firstMonthCol, totalCol));
         int feesRow = summary.size() + 1;
         summary.add(metricRow("Комиссии", feesRow, months, ReportService::feesFormula, firstMonthCol, lastMonthCol));
 
@@ -337,6 +339,7 @@ public class ReportService {
             catHeader.add(monthHeader(ym));
         }
         catHeader.add("Итого");
+        catHeader.add("В среднем в месяц");
         summary.add(catHeader);
 
         Map<String, BigDecimal> categoryTotals = new HashMap<>();
@@ -362,7 +365,9 @@ public class ReportService {
                 for (YearMonth ym : months) {
                     row.add(categoryExpenseFormula(e.getKey().category(), e.getKey().subcategory(), ym));
                 }
-                row.add(totalFormula(summary.size() + 1, firstMonthCol, lastMonthCol));
+                int rowNumber = summary.size() + 1;
+                row.add(totalFormula(rowNumber, firstMonthCol, lastMonthCol));
+                row.add(averageFormula(rowNumber, firstMonthCol, lastMonthCol));
                 summary.add(row);
             }
             if (entries.size() > 1) {
@@ -372,7 +377,9 @@ public class ReportService {
                 for (YearMonth ym : months) {
                     row.add(categoryTotalFormula(category, ym));
                 }
-                row.add(totalFormula(summary.size() + 1, firstMonthCol, lastMonthCol));
+                int rowNumber = summary.size() + 1;
+                row.add(totalFormula(rowNumber, firstMonthCol, lastMonthCol));
+                row.add(averageFormula(rowNumber, firstMonthCol, lastMonthCol));
                 summary.add(row);
             }
         }
@@ -404,6 +411,7 @@ public class ReportService {
             header.add(monthHeader(ym));
         }
         header.add("Итого " + defaultCurrency);
+        header.add("В среднем в месяц");
         header.add("В валюте накоплений");
         summary.add(header);
 
@@ -415,7 +423,9 @@ public class ReportService {
             for (YearMonth ym : months) {
                 row.add(savingsExpenseFormula(r.subcategory(), ym));
             }
-            row.add(totalFormula(summary.size() + 1, firstMonthCol, lastMonthCol));
+            int rowNumber = summary.size() + 1;
+            row.add(totalFormula(rowNumber, firstMonthCol, lastMonthCol));
+            row.add(averageFormula(rowNumber, firstMonthCol, lastMonthCol));
             // Rendered as text, not a number: crypto amounts need far more decimals than the
             // sheet-wide money format ("# ##0.00") would keep, which would show BTC as 0.00.
             row.add(formatAssetAmount(r.amountInOwnCurrency()));
@@ -426,7 +436,9 @@ public class ReportService {
         for (YearMonth ym : months) {
             totalRow.add(categoryTotalFormula(CategoryService.SAVINGS, ym));
         }
-        totalRow.add(totalFormula(summary.size() + 1, firstMonthCol, lastMonthCol));
+        int totalRowNumber = summary.size() + 1;
+        totalRow.add(totalFormula(totalRowNumber, firstMonthCol, lastMonthCol));
+        totalRow.add(averageFormula(totalRowNumber, firstMonthCol, lastMonthCol));
         summary.add(totalRow);
     }
 
@@ -457,10 +469,11 @@ public class ReportService {
             row.add(formulaFn.apply(ym));
         }
         row.add(totalFormula(rowNumber, firstMonthCol, lastMonthCol));
+        row.add(averageFormula(rowNumber, firstMonthCol, lastMonthCol));
         return row;
     }
 
-    private static List<Object> netRow(int incomeRow, int expenseRow, List<YearMonth> months, int firstMonthCol, int totalCol) {
+    private static List<Object> netRow(int incomeRow, int expenseRow, int rowNumber, List<YearMonth> months, int firstMonthCol, int totalCol) {
         List<Object> row = new ArrayList<>(List.of("Нетто", ""));
         for (int i = 0; i < months.size(); i++) {
             String col = columnLetter(firstMonthCol + i);
@@ -468,11 +481,16 @@ public class ReportService {
         }
         String totalColLetter = columnLetter(totalCol);
         row.add(new FormulaCell(totalColLetter + incomeRow + "-" + totalColLetter + expenseRow));
+        row.add(averageFormula(rowNumber, firstMonthCol, totalCol - 1));
         return row;
     }
 
     private static FormulaCell totalFormula(int rowNumber, int firstMonthCol, int lastMonthCol) {
         return new FormulaCell("SUM(" + columnLetter(firstMonthCol) + rowNumber + ":" + columnLetter(lastMonthCol) + rowNumber + ")");
+    }
+
+    private static FormulaCell averageFormula(int rowNumber, int firstMonthCol, int lastMonthCol) {
+        return new FormulaCell("AVERAGE(" + columnLetter(firstMonthCol) + rowNumber + ":" + columnLetter(lastMonthCol) + rowNumber + ")");
     }
 
     private static String txRange(String column) {
@@ -548,6 +566,7 @@ public class ReportService {
             header.add(monthHeader(ym));
         }
         header.add("Итого");
+        header.add("В среднем в месяц");
         rows.add(header);
 
         for (String tag : hashtags) {
@@ -555,7 +574,9 @@ public class ReportService {
             for (YearMonth ym : months) {
                 row.add(hashtagExpenseFormula(tag, ym));
             }
-            row.add(totalFormula(rows.size() + 1, firstMonthCol, lastMonthCol));
+            int rowNumber = rows.size() + 1;
+            row.add(totalFormula(rowNumber, firstMonthCol, lastMonthCol));
+            row.add(averageFormula(rowNumber, firstMonthCol, lastMonthCol));
             rows.add(row);
         }
         return rows;

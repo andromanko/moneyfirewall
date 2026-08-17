@@ -35,7 +35,7 @@ class ReportServiceHashtagTest {
         List<List<Object>> rows = ReportService.buildHashtagSheet(months, tags);
 
         assertEquals(3, rows.size(), "header + 2 tag rows");
-        assertEquals(List.of("Хэштег", "Январь 2026", "Февраль 2026", "Итого"), rows.get(0));
+        assertEquals(List.of("Хэштег", "Январь 2026", "Февраль 2026", "Итого", "В среднем в месяц"), rows.get(0));
         assertEquals("#друзья", rows.get(1).get(0));
         assertEquals("#корпоратив", rows.get(2).get(0));
         // Per-month cells and the total are live formulas, not Java-computed numbers.
