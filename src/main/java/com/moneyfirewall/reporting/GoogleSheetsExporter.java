@@ -60,15 +60,16 @@ public class GoogleSheetsExporter {
             Spreadsheet created = sheets.spreadsheets().create(spreadsheet).execute();
             String spreadsheetId = created.getSpreadsheetId();
 
-            ensureSheets(sheets, spreadsheetId, List.of("Summary", "ByCategory", "ByMember", "Transactions"));
+            ensureSheets(sheets, spreadsheetId, List.of("Summary", "ByCategory", "ByMember", "Transactions", "ByHashtag"));
 
-            // Summary/ByCategory now contain FormulaCell values that must be parsed as formulas
-            // (USER_ENTERED); the other sheets hold plain data and stay RAW so nothing in them
-            // (e.g. ISO timestamps) gets auto-reinterpreted by Sheets.
+            // Summary/ByCategory/ByHashtag now contain FormulaCell values that must be parsed as
+            // formulas (USER_ENTERED); the other sheets hold plain data and stay RAW so nothing in
+            // them (e.g. ISO timestamps) gets auto-reinterpreted by Sheets.
             writeValues(sheets, spreadsheetId, "Summary", tables.summary(), "USER_ENTERED");
             writeValues(sheets, spreadsheetId, "ByCategory", tables.byCategory(), "USER_ENTERED");
             writeValues(sheets, spreadsheetId, "ByMember", tables.byMember(), "RAW");
             writeValues(sheets, spreadsheetId, "Transactions", tables.transactions(), "RAW");
+            writeValues(sheets, spreadsheetId, "ByHashtag", tables.byHashtag(), "USER_ENTERED");
             applySummaryFormatting(sheets, spreadsheetId, tables.summary());
             applyByCategoryFormatting(sheets, spreadsheetId, tables.byCategory());
             applyTransactionsFormatting(sheets, spreadsheetId, tables.currency());

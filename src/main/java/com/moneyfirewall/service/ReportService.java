@@ -51,6 +51,9 @@ public class ReportService {
     private static final String TX_COL_SUBCATEGORY = "I";
     private static final String TX_COL_NICKNAME = "J";
     private static final String TX_COL_MONTH = "L";
+    private static final String TX_COL_TAGS = "N";
+
+    private static final java.util.regex.Pattern HASHTAG = java.util.regex.Pattern.compile("#[\\p{L}\\p{N}_]+");
 
     private final TransactionRepository transactionRepository;
     private final CategoryService categoryService;
@@ -91,6 +94,9 @@ public class ReportService {
         Map<CategoryPair, BigDecimal> categoryConvertedTotal = new HashMap<>();
         // Keyed by savings subcategory name ("" for a deposit booked straight on the root).
         Map<String, BigDecimal> savingsConvertedTotal = new TreeMap<>();
+        // Distinct #hashtags seen on expense transactions, driving which rows the ByHashtag sheet
+        // gets; the sums themselves come from live formulas against the Transactions sheet.
+        Set<String> hashtagsSeen = new TreeSet<>();
         BigDecimal incomeTotal = BigDecimal.ZERO;
         BigDecimal expenseTotal = BigDecimal.ZERO;
         Set<String> monthKeysSeen = new TreeSet<>();
@@ -99,7 +105,7 @@ public class ReportService {
 
         List<List<Object>> txRows = new ArrayList<>();
         txRows.add(List.of("Дата и время", "Тип", "Сумма", "Валюта", "Курс НБРБ",
-                "Сумма в " + defaultCurrency, "Счёт", "Категория", "Подкатегория", "Контрагент", "Участник", "Месяц", "ID"));
+                "Сумма в " + defaultCurrency, "Счёт", "Категория", "Подкатегория", "Контрагент", "Участник", "Месяц", "ID", "Хэштеги"));
 
         for (Transaction t : tx) {
             boolean isTransfer = t.getDirection() == TransactionDirection.TRANSFER || t.getTransferGroup() != null;
@@ -124,6 +130,9 @@ public class ReportService {
                 if (t.getDirection() == TransactionDirection.INCOME) {
                     incomeTotal = incomeTotal.add(converted.numericAmount());
                 } else if (t.getDirection() == TransactionDirection.EXPENSE) {
+                    // Hashtags are an independent tagging overlay, so they're collected regardless
+                    // of category (including CASH/savings), unlike the category breakdown below.
+                    hashtagsSeen.addAll(extractHashtags(t.getTags()));
                     // Savings deposits are money set aside, not spent: they stay out of the
                     // expense total and the Summary category breakdown, and get their own block.
                     if (categoryService.isSavings(category)) {
@@ -164,7 +173,8 @@ public class ReportService {
                     cp,
                     member,
                     monthKey,
-                    t.getId().toString()
+                    t.getId().toString(),
+                    t.getTags() == null ? "" : t.getTags()
             ));
         }
 
@@ -180,7 +190,9 @@ public class ReportService {
                 .sorted(Map.Entry.comparingByValue(Comparator.reverseOrder()))
                 .forEach(e -> memberRows.add(List.of(e.getKey(), e.getValue())));
 
-        return new ReportTables(summary, catRows, memberRows, txRows, incomeTotal, expenseTotal, defaultCurrency);
+        List<List<Object>> hashtagRows = buildHashtagSheet(months, hashtagsSeen);
+
+        return new ReportTables(summary, catRows, memberRows, txRows, hashtagRows, incomeTotal, expenseTotal, defaultCurrency);
     }
 
     /**
@@ -504,6 +516,54 @@ public class ReportService {
         return new FormulaCell("SUMIFS(" + txRange(TX_COL_AMOUNT_CONVERTED) + "," + txRange(TX_COL_CATEGORY) + ",\"" + escapeFormulaString(category)
                 + "\"," + txRange(TX_COL_DIRECTION) + ",\"Расход\","
                 + txRange(TX_COL_MONTH) + ",\"" + monthKey(ym) + "\")");
+    }
+
+
+    /** Distinct #hashtags found in a tags string, lowercased so "#Корпоратив" and "#корпоратив"
+     * fold into one row (Excel's own SUMIFS wildcard match is already case-insensitive). */
+    static Set<String> extractHashtags(String tags) {
+        if (tags == null || tags.isBlank()) {
+            return Set.of();
+        }
+        Set<String> found = new TreeSet<>();
+        java.util.regex.Matcher m = HASHTAG.matcher(tags);
+        while (m.find()) {
+            found.add(m.group().toLowerCase(Locale.ROOT));
+        }
+        return found;
+    }
+
+    /**
+     * One row per hashtag, expense-only (matching the rest of the report's category/savings
+     * blocks, all of which are expense-focused): per-month and total SUMIFS matching any
+     * transaction whose tags column contains that hashtag as a substring.
+     */
+    static List<List<Object>> buildHashtagSheet(List<YearMonth> months, Set<String> hashtags) {
+        List<List<Object>> rows = new ArrayList<>();
+        int firstMonthCol = 1; // column B
+        int lastMonthCol = firstMonthCol + months.size() - 1;
+
+        List<Object> header = new ArrayList<>(List.of("Хэштег"));
+        for (YearMonth ym : months) {
+            header.add(monthHeader(ym));
+        }
+        header.add("Итого");
+        rows.add(header);
+
+        for (String tag : hashtags) {
+            List<Object> row = new ArrayList<>(List.of(tag));
+            for (YearMonth ym : months) {
+                row.add(hashtagExpenseFormula(tag, ym));
+            }
+            row.add(totalFormula(rows.size() + 1, firstMonthCol, lastMonthCol));
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    private static FormulaCell hashtagExpenseFormula(String hashtag, YearMonth ym) {
+        return new FormulaCell("SUMIFS(" + txRange(TX_COL_AMOUNT_CONVERTED) + "," + txRange(TX_COL_DIRECTION) + ",\"Расход\","
+                + txRange(TX_COL_MONTH) + ",\"" + monthKey(ym) + "\"," + txRange(TX_COL_TAGS) + ",\"*" + escapeFormulaString(hashtag) + "*\")");
     }
 
     static List<List<Object>> buildByCategorySheet(Map<CategoryKey, BigDecimal> amounts) {

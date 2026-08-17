@@ -129,6 +129,7 @@ public class CategoryRuleService {
     }
 
     private CategoryRule saveRule(UUID budgetId, Category cat, CategoryRuleConditions conditions, int priority, boolean isRegex) {
+        ensureNoDuplicateRule(budgetId, cat, conditions, isRegex);
         Budget budget = budgetRepository.findById(budgetId).orElseThrow();
         CategoryRule r = new CategoryRule();
         r.setBudget(budget);
@@ -142,6 +143,38 @@ public class CategoryRuleService {
         r.setRegex(isRegex);
         r.setCreatedAt(Instant.now());
         return ruleRepository.save(r);
+    }
+
+    /**
+     * Case-insensitive duplicate guard for the interactive "add rule" paths (the import path
+     * already dedupes via {@link #sameRule} before ever calling this). Same category + same
+     * pattern + same account/amount/once-per-month conditions is the same rule, regardless of
+     * case in the pattern text.
+     */
+    private void ensureNoDuplicateRule(UUID budgetId, Category cat, CategoryRuleConditions conditions, boolean isRegex) {
+        for (CategoryRule r : ruleRepository.findAllByBudgetId(budgetId)) {
+            Category existing = r.getCategory();
+            if (existing == null || !existing.getId().equals(cat.getId())) {
+                continue;
+            }
+            if (r.isRegex() != isRegex) {
+                continue;
+            }
+            if (!nullToEmpty(r.getPattern()).trim().equalsIgnoreCase(nullToEmpty(conditions.pattern()).trim())) {
+                continue;
+            }
+            if (!Objects.equals(blankToNull(r.getAccountName()), blankToNull(conditions.accountName()))) {
+                continue;
+            }
+            if (!amountsEqual(r.getMinAmount(), conditions.minAmount()) || !amountsEqual(r.getExactAmount(), conditions.exactAmount())) {
+                continue;
+            }
+            if (r.isOncePerMonth() != conditions.oncePerMonth()) {
+                continue;
+            }
+            String match = nullToEmpty(conditions.pattern()).isBlank() ? "*" : conditions.pattern();
+            throw new IllegalArgumentException("Такое правило уже существует: " + categoryPath(existing) + " <= " + match);
+        }
     }
 
     @Transactional(readOnly = true)

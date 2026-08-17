@@ -8,6 +8,7 @@ public record ReportTables(
         List<List<Object>> byCategory,
         List<List<Object>> byMember,
         List<List<Object>> transactions,
+        List<List<Object>> byHashtag,
         BigDecimal incomeTotal,
         BigDecimal expenseTotal,
         String currency

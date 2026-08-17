@@ -61,6 +61,11 @@ public class Transaction {
     @Column(name = "description")
     private String description;
 
+    /** Free-form user tag/comment (e.g. "#корпоратив"), independent of category and separate
+     * from the bank-statement description above. */
+    @Column(name = "tags")
+    private String tags;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "source", nullable = false)
     private TransactionSource source;
@@ -179,6 +184,14 @@ public class Transaction {
 
     public void setDescription(String description) {
         this.description = description;
+    }
+
+    public String getTags() {
+        return tags;
+    }
+
+    public void setTags(String tags) {
+        this.tags = tags;
     }
 
     public TransactionSource getSource() {

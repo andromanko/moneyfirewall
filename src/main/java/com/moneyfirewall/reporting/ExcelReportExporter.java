@@ -41,6 +41,9 @@ public class ExcelReportExporter {
             XSSFSheet transactionsSheet = wb.createSheet("Transactions");
             writeSheet(transactionsSheet, t.transactions(), transactionsRowStyle(wb, t.transactions()), yellowStyle, greenStyle, moneyStyle);
 
+            XSSFSheet byHashtagSheet = wb.createSheet("ByHashtag");
+            writeSheet(byHashtagSheet, t.byHashtag(), null, yellowStyle, greenStyle, moneyStyle);
+
             // Formulas (Summary metrics/category breakdown, ByCategory subtotals) reference other
             // sheets/ranges, so evaluate only once every sheet is populated, and autosize afterwards
             // so column widths reflect computed values rather than raw formula text.
@@ -49,6 +52,7 @@ public class ExcelReportExporter {
             autoSizeColumns(byCategorySheet, t.byCategory());
             autoSizeColumns(byMemberSheet, t.byMember());
             autoSizeColumns(transactionsSheet, t.transactions());
+            autoSizeColumns(byHashtagSheet, t.byHashtag());
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             wb.write(out);

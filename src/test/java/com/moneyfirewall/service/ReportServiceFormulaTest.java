@@ -72,7 +72,8 @@ class ReportServiceFormulaTest {
         List<List<Object>> byCategory = List.of(List.of("category", "subcategory", "currency", "nickname", "amount"));
         List<List<Object>> byMember = List.of(List.of("member", "expense"));
 
-        ReportTables tables = new ReportTables(summary, byCategory, byMember, transactions,
+        List<List<Object>> byHashtag = List.of(List.of("Хэштег"));
+        ReportTables tables = new ReportTables(summary, byCategory, byMember, transactions, byHashtag,
                 new BigDecimal("1500"), new BigDecimal("430"), "BYN");
         byte[] xlsx = new ExcelReportExporter().export(tables);
 
