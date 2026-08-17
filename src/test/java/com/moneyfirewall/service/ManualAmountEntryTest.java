@@ -1,6 +1,7 @@
 package com.moneyfirewall.service;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
@@ -15,6 +16,36 @@ class ManualAmountEntryTest {
         assertEquals(0, new BigDecimal("40").compareTo(e.amount()));
         assertEquals("BYN", e.currency());
         assertNull(e.comment());
+        assertNull(e.date());
+    }
+
+    @Test
+    void leadingDayMonthDefaultsToCurrentYear() {
+        ManualAmountEntry e = parse("15.08 100 такси");
+        assertEquals(LocalDate.of(LocalDate.now().getYear(), 8, 15), e.date());
+        assertEquals(0, new BigDecimal("100").compareTo(e.amount()));
+        assertEquals("такси", e.comment());
+    }
+
+    @Test
+    void leadingDayMonthYear() {
+        ManualAmountEntry e = parse("15.08.2026 50 EUR подарок");
+        assertEquals(LocalDate.of(2026, 8, 15), e.date());
+        assertEquals("EUR", e.currency());
+        assertEquals("подарок", e.comment());
+    }
+
+    @Test
+    void leadingIsoDate() {
+        ManualAmountEntry e = parse("2026-08-15 20 кофе");
+        assertEquals(LocalDate.of(2026, 8, 15), e.date());
+        assertEquals("кофе", e.comment());
+    }
+
+    @Test
+    void invalidLeadingDateIsNotConsumedAsADate() {
+        ManualAmountEntry e = parse("32.13 100 такси");
+        assertNull(e.date());
     }
 
     @Test

@@ -1320,19 +1320,39 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             }
             String step = st.payload().getOrDefault("step", "").toString();
             if ("id".equals(step)) {
-                String raw = text == null ? "" : text.trim();
-                Transaction t;
-                try {
-                    t = transactionService.findById(budgetId, UUID.fromString(raw)).orElse(null);
-                } catch (Exception e) {
-                    t = null;
-                }
-                if (t == null) {
+                List<UUID> ids = parseTransactionIds(text);
+                if (ids.isEmpty()) {
                     sender.sendText(chatId, "Не найдено, попробуйте другой ID", transactionFindBackMenu());
                     return true;
                 }
-                conversationService.clear(userId);
-                sender.sendText(chatId, transactionDetailsText(t), transactionViewMenu(t));
+                if (ids.size() == 1) {
+                    Transaction t = transactionService.findById(budgetId, ids.get(0)).orElse(null);
+                    if (t == null) {
+                        sender.sendText(chatId, "Не найдено, попробуйте другой ID", transactionFindBackMenu());
+                        return true;
+                    }
+                    conversationService.clear(userId);
+                    sender.sendText(chatId, transactionDetailsText(t), transactionViewMenu(t));
+                    return true;
+                }
+                List<UUID> found = new ArrayList<>();
+                for (UUID id : ids) {
+                    if (transactionService.findById(budgetId, id).isPresent()) {
+                        found.add(id);
+                    }
+                }
+                if (found.isEmpty()) {
+                    sender.sendText(chatId, "Ни одна из введённых транзакций не найдена, попробуйте снова", transactionFindBackMenu());
+                    return true;
+                }
+                conversationService.set(userId, "tx_bulk", new HashMap<>(Map.of(
+                        "ids", found.stream().map(UUID::toString).collect(java.util.stream.Collectors.joining(","))
+                )));
+                int notFound = ids.size() - found.size();
+                String msg = "Найдено транзакций: " + found.size()
+                        + (notFound > 0 ? " (не найдено: " + notFound + ")" : "")
+                        + "\n\nВыберите действие для всех найденных транзакций:";
+                sender.sendText(chatId, msg, transactionBulkMenu(found.size()));
                 return true;
             }
             if ("counterparty".equals(step)) {
@@ -1349,6 +1369,33 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 sender.sendText(chatId, "Найдено: " + results.size(), transactionSearchResultsMenu(results));
                 return true;
             }
+            return true;
+        }
+
+        if ("tx_bulk_tags".equals(st.key())) {
+            UUID budgetId = budgetService.getActiveBudgetId(userId);
+            if (budgetId == null) {
+                conversationService.clear(userId);
+                sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+                return true;
+            }
+            if (!budgetService.isAdmin(budgetId, userId)) {
+                conversationService.clear(userId);
+                sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+                return true;
+            }
+            List<UUID> ids = parseBulkIds(st.payload());
+            int ok = 0;
+            for (UUID id : ids) {
+                try {
+                    transactionService.setTags(budgetId, id, text);
+                    ok++;
+                } catch (Exception ignored) {
+                    // skip transactions that no longer exist
+                }
+            }
+            conversationService.clear(userId);
+            sender.sendText(chatId, "✅ Тег/комментарий обновлён у " + ok + " из " + ids.size() + " транзакций", transactionFindMenu());
             return true;
         }
 
@@ -1383,6 +1430,41 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 }
                 Category category = categoryService.ensure(budgetId, kind, name);
                 applyTransactionCategoryEdit(chatId, userId, budgetId, txId, category);
+                return true;
+            }
+            return true;
+        }
+
+        if ("tx_bulk_edit_cat".equals(st.key())) {
+            UUID budgetId = budgetService.getActiveBudgetId(userId);
+            if (budgetId == null) {
+                conversationService.clear(userId);
+                sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+                return true;
+            }
+            if (!budgetService.isAdmin(budgetId, userId)) {
+                conversationService.clear(userId);
+                sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+                return true;
+            }
+            String step = st.payload().getOrDefault("step", "").toString();
+            if ("newCategoryName".equals(step)) {
+                String name = text == null ? "" : text.trim();
+                if (name.isBlank()) {
+                    sender.sendText(chatId, "Введите название категории", transactionFindBackMenu());
+                    return true;
+                }
+                String kindRaw = st.payload().getOrDefault("kind", "").toString();
+                CategoryKind kind;
+                try {
+                    kind = CategoryKind.valueOf(kindRaw);
+                } catch (Exception e) {
+                    conversationService.clear(userId);
+                    sender.sendText(chatId, "Ошибка", menuForUser(userId));
+                    return true;
+                }
+                Category category = categoryService.ensure(budgetId, kind, name);
+                applyTransactionBulkCategoryEdit(chatId, userId, budgetId, st.payload(), category);
                 return true;
             }
             return true;
@@ -1885,6 +1967,27 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return;
         }
 
+        if (data.equals("mf:txbulk:edit_cat")) {
+            onTransactionBulkEditCategoryStart(chatId, user.getId());
+            return;
+        }
+
+        if (data.startsWith("mf:txbulk:edit_cat_pick:")) {
+            String categoryId = data.substring("mf:txbulk:edit_cat_pick:".length());
+            onTransactionBulkEditCategoryPick(chatId, user.getId(), categoryId);
+            return;
+        }
+
+        if (data.equals("mf:txbulk:edit_cat_newcat")) {
+            onTransactionBulkEditCategoryNewCategory(chatId, user.getId());
+            return;
+        }
+
+        if (data.equals("mf:txbulk:tags")) {
+            onTransactionBulkTagsStart(chatId, user.getId());
+            return;
+        }
+
         if (data.startsWith("mf:cat:add_kind:")) {
             String kind = data.substring("mf:cat:add_kind:".length());
             onCategoryAddKind(chatId, user.getId(), kind);
@@ -2367,6 +2470,9 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 "Счета / Участники — управление в рамках активного бюджета\n" +
                 "Никнеймы — короткие имена контрагентов в отчётах (фраза из выписки → никнейм)\n" +
                 "Категории — создание/список/переименование/удаление категорий и подкатегорий, правила автопроставления категории по контрагенту\n" +
+                "Транзакция → По ID — найти транзакцию по ID; можно ввести несколько ID через запятую, пробел или с новой строки, тогда изменение категории или тега применится сразу ко всем найденным\n" +
+                "Транзакция → 🏷 Тег/комментарий — задать свободный текст на транзакцию, хэштеги (#слово) попадут в отдельный лист отчёта с суммами по месяцам\n" +
+                "Наличные: доход/расход/снятие — сумму можно ввести одной строкой с датой, валютой и комментарием, например: 15.08 100 USD такси (дата и валюта необязательны)\n" +
                 "/budget_currency <код> — валюта отчётов по умолчанию (в неё пересчитываются другие валюты)\n" +
                 "Сброс — вернуться в главное меню\n\n" +
                 "Сборка: " + buildInfoService.buildTime();
@@ -2731,6 +2837,181 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         rows.add(new InlineKeyboardRow(btn("➕ Новая категория", "mf:tx:edit_cat_newcat")));
         rows.add(new InlineKeyboardRow(btn("⬅️ Назад", "mf:tx:view:" + txId)));
         return InlineKeyboardMarkup.builder().keyboard(rows).build();
+    }
+
+    private InlineKeyboardMarkup transactionBulkMenu(int count) {
+        return InlineKeyboardMarkup.builder()
+                .keyboard(List.of(
+                        new InlineKeyboardRow(btn("✏️ Изменить категорию (" + count + ")", "mf:txbulk:edit_cat")),
+                        new InlineKeyboardRow(btn("🏷 Тег/комментарий (" + count + ")", "mf:txbulk:tags")),
+                        new InlineKeyboardRow(btn("⬅️ Назад", "mf:tx_find"))
+                ))
+                .build();
+    }
+
+    private InlineKeyboardMarkup transactionBulkEditCategoryMenu(UUID budgetId, CategoryKind kind) {
+        List<InlineKeyboardRow> rows = new ArrayList<>();
+        if (kind == CategoryKind.EXPENSE) {
+            Category cash = categoryService.ensureCash(budgetId);
+            rows.add(new InlineKeyboardRow(btn("🏧 Наличные (CASH)", "mf:txbulk:edit_cat_pick:" + cash.getId())));
+        }
+        for (Category p : categoryService.listParents(budgetId, kind)) {
+            if (CategoryService.CASH.equalsIgnoreCase(p.getName())) {
+                continue;
+            }
+            rows.add(new InlineKeyboardRow(btn(p.getName(), "mf:txbulk:edit_cat_pick:" + p.getId())));
+            for (Category c : categoryService.listChildren(budgetId, kind, p.getId())) {
+                rows.add(new InlineKeyboardRow(btn("— " + c.getName(), "mf:txbulk:edit_cat_pick:" + c.getId())));
+            }
+        }
+        rows.add(new InlineKeyboardRow(btn("➕ Новая категория", "mf:txbulk:edit_cat_newcat")));
+        rows.add(new InlineKeyboardRow(btn("⬅️ Назад", "mf:tx_find")));
+        return InlineKeyboardMarkup.builder().keyboard(rows).build();
+    }
+
+    /** Splits on commas, whitespace and newlines; malformed tokens are silently dropped. */
+    private List<UUID> parseTransactionIds(String text) {
+        if (text == null || text.isBlank()) {
+            return List.of();
+        }
+        List<UUID> ids = new ArrayList<>();
+        for (String token : text.split("[,\\s]+")) {
+            if (token.isBlank()) {
+                continue;
+            }
+            try {
+                UUID id = UUID.fromString(token.trim());
+                if (!ids.contains(id)) {
+                    ids.add(id);
+                }
+            } catch (IllegalArgumentException ignored) {
+                // not a valid UUID token, skip it
+            }
+        }
+        return ids;
+    }
+
+    private List<UUID> parseBulkIds(Map<String, Object> payload) {
+        String raw = payload.getOrDefault("ids", "").toString();
+        if (raw.isBlank()) {
+            return List.of();
+        }
+        List<UUID> ids = new ArrayList<>();
+        for (String token : raw.split(",")) {
+            if (!token.isBlank()) {
+                ids.add(UUID.fromString(token));
+            }
+        }
+        return ids;
+    }
+
+    private void onTransactionBulkTagsStart(long chatId, UUID userId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        if (!budgetService.isAdmin(budgetId, userId)) {
+            sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+            return;
+        }
+        State st = conversationService.get(userId).orElse(null);
+        if (st == null || !"tx_bulk".equals(st.key())) {
+            sender.sendText(chatId, "Нет активного визарда", menuForUser(userId));
+            return;
+        }
+        Map<String, Object> p = new HashMap<>(st.payload());
+        conversationService.set(userId, "tx_bulk_tags", p);
+        sender.sendText(chatId, "Введите новый тег/комментарий для всех выбранных транзакций (например: #корпоратив подарок коллегам).",
+                transactionFindBackMenu());
+    }
+
+    private void onTransactionBulkEditCategoryStart(long chatId, UUID userId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        if (!budgetService.isAdmin(budgetId, userId)) {
+            sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+            return;
+        }
+        State st = conversationService.get(userId).orElse(null);
+        if (st == null || !"tx_bulk".equals(st.key())) {
+            sender.sendText(chatId, "Нет активного визарда", menuForUser(userId));
+            return;
+        }
+        List<UUID> ids = parseBulkIds(st.payload());
+        CategoryKind commonKind = null;
+        for (UUID id : ids) {
+            Transaction t = transactionService.findById(budgetId, id).orElse(null);
+            if (t == null || t.getDirection() == com.moneyfirewall.domain.TransactionDirection.TRANSFER) {
+                continue;
+            }
+            CategoryKind kind = t.getDirection() == com.moneyfirewall.domain.TransactionDirection.INCOME ? CategoryKind.INCOME : CategoryKind.EXPENSE;
+            if (commonKind == null) {
+                commonKind = kind;
+            } else if (commonKind != kind) {
+                sender.sendText(chatId, "❌ Среди выбранных транзакций есть и доход, и расход — выберите транзакции одного направления", transactionFindMenu());
+                return;
+            }
+        }
+        if (commonKind == null) {
+            sender.sendText(chatId, "❌ Среди выбранных транзакций нет ни одной с категорией (переводы её не имеют)", transactionFindMenu());
+            return;
+        }
+        Map<String, Object> p = new HashMap<>(st.payload());
+        p.put("kind", commonKind.name());
+        conversationService.set(userId, "tx_bulk_edit_cat", p);
+        sender.sendText(chatId, "Выбери новую категорию для всех выбранных транзакций", transactionBulkEditCategoryMenu(budgetId, commonKind));
+    }
+
+    private void onTransactionBulkEditCategoryNewCategory(long chatId, UUID userId) {
+        State st = conversationService.get(userId).orElse(null);
+        if (st == null || !"tx_bulk_edit_cat".equals(st.key())) {
+            sender.sendText(chatId, "Нет активного визарда", menuForUser(userId));
+            return;
+        }
+        Map<String, Object> p = new HashMap<>(st.payload());
+        p.put("step", "newCategoryName");
+        conversationService.set(userId, "tx_bulk_edit_cat", p);
+        sender.sendText(chatId, "Введите название категории", transactionFindBackMenu());
+    }
+
+    private void onTransactionBulkEditCategoryPick(long chatId, UUID userId, String categoryId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            conversationService.clear(userId);
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        State st = conversationService.get(userId).orElse(null);
+        if (st == null || !"tx_bulk_edit_cat".equals(st.key())) {
+            sender.sendText(chatId, "Нет активного визарда", menuForUser(userId));
+            return;
+        }
+        Category category = categoryService.findById(budgetId, UUID.fromString(categoryId)).orElse(null);
+        if (category == null) {
+            sender.sendText(chatId, "Категория не найдена", transactionFindMenu());
+            return;
+        }
+        applyTransactionBulkCategoryEdit(chatId, userId, budgetId, st.payload(), category);
+    }
+
+    private void applyTransactionBulkCategoryEdit(long chatId, UUID userId, UUID budgetId, Map<String, Object> payload, Category category) {
+        List<UUID> ids = parseBulkIds(payload);
+        int ok = 0;
+        for (UUID id : ids) {
+            try {
+                transactionService.setCategory(budgetId, id, category);
+                ok++;
+            } catch (Exception ignored) {
+                // skip transfers/missing transactions
+            }
+        }
+        conversationService.clear(userId);
+        sender.sendText(chatId, "✅ Категория изменена у " + ok + " из " + ids.size() + " транзакций: " + categoryService.displayName(category),
+                transactionFindMenu());
     }
 
     private InlineKeyboardMarkup transactionViewOnlyBackMenu(String txId) {
@@ -4059,8 +4340,12 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         if (!MANUAL_AMOUNT_ENTRY_KEYS.contains(key)) {
             return "Выбери сумму";
         }
-        return "Выбери сумму кнопкой или введи одной строкой: сумма, валюта (необязательно, по умолчанию BYN) и комментарий через пробел.\n"
+        String hint = "Выбери сумму кнопкой или введи одной строкой: сумма, валюта (необязательно, по умолчанию BYN) и комментарий через пробел.\n"
                 + "Например: 100 USD такси, 25,50 продукты, $20 кофе";
+        if (isCashKey(key)) {
+            hint += "\nМожно указать дату первой (по умолчанию сегодня): 15.08 100 такси, 15.08.2026 100 такси";
+        }
+        return hint;
     }
 
     /**
@@ -4103,7 +4388,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         }
 
         try {
-            Instant now = Instant.now();
+            Instant now = entry.date() == null ? Instant.now() : entry.date().atStartOfDay().toInstant(ZoneOffset.UTC);
             switch (key) {
                 case "expense_manual" -> saveExpenseManual(budgetId, userId, payload, entry.comment());
                 case "cash_expense" -> {
@@ -4126,6 +4411,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             }
             conversationService.clear(userId);
             sender.sendText(chatId, "✅ Записано: " + formatAmount(entry.amount()) + " " + entry.currency()
+                    + (entry.date() == null ? "" : " (" + entry.date() + ")")
                     + (entry.comment() == null ? "" : " — " + entry.comment()), mainMenu());
         } catch (Exception e) {
             conversationService.clear(userId);

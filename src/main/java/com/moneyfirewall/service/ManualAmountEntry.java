@@ -1,6 +1,9 @@
 package com.moneyfirewall.service;
 
 import java.math.BigDecimal;
+import java.time.DateTimeException;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -9,14 +12,17 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * One-line manual entry: an amount, an optional currency (symbol or code, BYN when omitted) and an
- * optional free-text comment — e.g. {@code "100 USD обед"}, {@code "25,50 продукты"},
- * {@code "20$ такси"}, {@code "$100"}, {@code "40"}.
+ * One-line manual entry: an optional date, an amount, an optional currency (symbol or code, BYN
+ * when omitted) and an optional free-text comment — e.g. {@code "100 USD обед"},
+ * {@code "25,50 продукты"}, {@code "20$ такси"}, {@code "$100"}, {@code "40"},
+ * {@code "15.08 100 такси"} (this year), {@code "15.08.2026 100 такси"}.
  *
  * <p>A currency code is only recognised from a known list rather than "any three letters", so a
  * comment like {@code "100 еда"} stays a comment instead of becoming a bogus currency.
+ *
+ * @param date null when no date was given in the text — the caller then defaults to today.
  */
-public record ManualAmountEntry(BigDecimal amount, String currency, String comment) {
+public record ManualAmountEntry(LocalDate date, BigDecimal amount, String currency, String comment) {
     public static final String DEFAULT_CURRENCY = "BYN";
 
     private static final Map<String, String> SYMBOLS = Map.of(
@@ -40,6 +46,7 @@ public record ManualAmountEntry(BigDecimal amount, String currency, String comme
     private static final Pattern AMOUNT = Pattern.compile("^(\\d+(?:[.,]\\d{1,8})?)");
     private static final Pattern TRAILING_SYMBOL = Pattern.compile("^\\s*([$€₽£])");
     private static final Pattern WORD = Pattern.compile("^\\s+(\\S+)");
+    private static final Pattern LEADING_DATE = Pattern.compile("^(\\d{4}-\\d{1,2}-\\d{1,2}|\\d{1,2}\\.\\d{1,2}\\.\\d{4}|\\d{1,2}\\.\\d{1,2})\\s+");
 
     public static Optional<ManualAmountEntry> parse(String text) {
         if (text == null) {
@@ -48,6 +55,15 @@ public record ManualAmountEntry(BigDecimal amount, String currency, String comme
         String rest = text.trim();
         if (rest.isEmpty()) {
             return Optional.empty();
+        }
+
+        LocalDate date = null;
+        Matcher dateMatcher = LEADING_DATE.matcher(rest);
+        if (dateMatcher.find()) {
+            date = parseDateToken(dateMatcher.group(1));
+            if (date != null) {
+                rest = rest.substring(dateMatcher.end());
+            }
         }
 
         String currency = null;
@@ -95,6 +111,7 @@ public record ManualAmountEntry(BigDecimal amount, String currency, String comme
 
         String comment = rest.trim();
         return Optional.of(new ManualAmountEntry(
+                date,
                 amount,
                 normalize(currency == null ? DEFAULT_CURRENCY : currency),
                 comment.isEmpty() ? null : comment
@@ -108,5 +125,23 @@ public record ManualAmountEntry(BigDecimal amount, String currency, String comme
     private static String normalize(String code) {
         String upper = code.toUpperCase(Locale.ROOT);
         return ALIASES.getOrDefault(upper, upper);
+    }
+
+    /** {@code "15.08"} (day.month, current year), {@code "15.08.2026"} or {@code "2026-08-15"}; null if invalid. */
+    private static LocalDate parseDateToken(String token) {
+        try {
+            if (token.contains("-")) {
+                return LocalDate.parse(token, DateTimeFormatter.ofPattern("yyyy-M-d"));
+            }
+            String[] parts = token.split("\\.");
+            int day = Integer.parseInt(parts[0]);
+            int month = Integer.parseInt(parts[1]);
+            if (parts.length == 3) {
+                return LocalDate.of(Integer.parseInt(parts[2]), month, day);
+            }
+            return LocalDate.of(LocalDate.now().getYear(), month, day);
+        } catch (DateTimeException | NumberFormatException e) {
+            return null;
+        }
     }
 }
