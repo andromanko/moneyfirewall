@@ -1319,10 +1319,20 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 return true;
             }
             String step = st.payload().getOrDefault("step", "").toString();
-            if ("id".equals(step)) {
+            if ("query".equals(step)) {
                 List<UUID> ids = parseTransactionIds(text);
                 if (ids.isEmpty()) {
-                    sender.sendText(chatId, "Не найдено, попробуйте другой ID", transactionFindBackMenu());
+                    String query = text == null ? "" : text.trim();
+                    if (query.isBlank()) {
+                        sender.sendText(chatId, "Введите ID транзакции или текст контрагента для поиска", transactionFindBackMenu());
+                        return true;
+                    }
+                    List<Transaction> results = transactionService.searchByCounterparty(budgetId, query, 15);
+                    if (results.isEmpty()) {
+                        sender.sendText(chatId, "Ничего не найдено, попробуйте другой текст", transactionFindBackMenu());
+                        return true;
+                    }
+                    sender.sendText(chatId, "Найдено: " + results.size(), transactionSearchResultsMenu(results));
                     return true;
                 }
                 if (ids.size() == 1) {
@@ -1353,20 +1363,6 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                         + (notFound > 0 ? " (не найдено: " + notFound + ")" : "")
                         + "\n\nВыберите действие для всех найденных транзакций:";
                 sender.sendText(chatId, msg, transactionBulkMenu(found.size()));
-                return true;
-            }
-            if ("counterparty".equals(step)) {
-                String query = text == null ? "" : text.trim();
-                if (query.isBlank()) {
-                    sender.sendText(chatId, "Введите текст контрагента для поиска", transactionFindBackMenu());
-                    return true;
-                }
-                List<Transaction> results = transactionService.searchByCounterparty(budgetId, query, 15);
-                if (results.isEmpty()) {
-                    sender.sendText(chatId, "Ничего не найдено, попробуйте другой текст", transactionFindBackMenu());
-                    return true;
-                }
-                sender.sendText(chatId, "Найдено: " + results.size(), transactionSearchResultsMenu(results));
                 return true;
             }
             return true;
@@ -1967,6 +1963,18 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return;
         }
 
+        if (data.startsWith("mf:tx:delete_confirm:")) {
+            String txId = data.substring("mf:tx:delete_confirm:".length());
+            onTransactionDeleteConfirm(chatId, user.getId(), txId);
+            return;
+        }
+
+        if (data.startsWith("mf:tx:delete:")) {
+            String txId = data.substring("mf:tx:delete:".length());
+            onTransactionDeleteStart(chatId, user.getId(), txId);
+            return;
+        }
+
         if (data.equals("mf:txbulk:edit_cat")) {
             onTransactionBulkEditCategoryStart(chatId, user.getId());
             return;
@@ -2097,8 +2105,6 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             case "mf:catrules:add_newcat" -> onCategoryRuleAddNewCategory(chatId, user.getId());
             case "mf:catrules:edit_cat_newcat" -> onCategoryRuleEditCategoryNewCategory(chatId, user.getId());
             case "mf:tx_find" -> onTransactionFindMenu(chatId, user.getId());
-            case "mf:tx_find_id" -> onTransactionFindIdStart(chatId, user.getId());
-            case "mf:tx_find_cp" -> onTransactionFindCounterpartyStart(chatId, user.getId());
             case "mf:tx:edit_cat_newcat" -> onTransactionEditCategoryNewCategory(chatId, user.getId());
             case "mf:cat_export" -> onCategoriesExport(chatId, user.getId());
             case "mf:cat_import" -> onCategoriesImportStart(chatId, user.getId());
@@ -2470,8 +2476,8 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 "Счета / Участники — управление в рамках активного бюджета\n" +
                 "Никнеймы — короткие имена контрагентов в отчётах (фраза из выписки → никнейм)\n" +
                 "Категории — создание/список/переименование/удаление категорий и подкатегорий, правила автопроставления категории по контрагенту\n" +
-                "Транзакция → По ID — найти транзакцию по ID; можно ввести несколько ID через запятую, пробел или с новой строки, тогда изменение категории или тега применится сразу ко всем найденным\n" +
-                "Транзакция → 🏷 Тег/комментарий — задать свободный текст на транзакцию, хэштеги (#слово) попадут в отдельный лист отчёта с суммами по месяцам\n" +
+                "Транзакция — введите ID или текст контрагента, поиск определяется автоматически; можно ввести несколько ID через запятую, пробел или с новой строки, тогда изменение категории или тега применится сразу ко всем найденным\n" +
+                "Транзакция → 🏷 Тег/комментарий, 🗑 Удалить — задать свободный текст или удалить транзакцию безвозвратно\n" +
                 "Наличные: доход/расход/снятие — сумму можно ввести одной строкой с датой, валютой и комментарием, например: 15.08 100 USD такси (дата и валюта необязательны)\n" +
                 "/budget_currency <код> — валюта отчётов по умолчанию (в неё пересчитываются другие валюты)\n" +
                 "Сброс — вернуться в главное меню\n\n" +
@@ -2784,8 +2790,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
     private InlineKeyboardMarkup transactionFindMenu() {
         return InlineKeyboardMarkup.builder()
                 .keyboard(List.of(
-                        new InlineKeyboardRow(btn("🆔 По ID", "mf:tx_find_id")),
-                        new InlineKeyboardRow(btn("🔎 По контрагенту", "mf:tx_find_cp")),
+                        new InlineKeyboardRow(btn("🔍 Искать транзакцию", "mf:tx_find")),
                         new InlineKeyboardRow(btn("⬅️ Меню", "mf:cancel"))
                 ))
                 .build();
@@ -2815,8 +2820,17 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             rows.add(new InlineKeyboardRow(btn("✏️ Изменить категорию", "mf:tx:edit_cat:" + t.getId())));
         }
         rows.add(new InlineKeyboardRow(btn("🏷 Тег/комментарий", "mf:tx:tags:" + t.getId())));
+        rows.add(new InlineKeyboardRow(btn("🗑 Удалить", "mf:tx:delete:" + t.getId())));
         rows.add(new InlineKeyboardRow(btn("⬅️ Назад", "mf:tx_find")));
         return InlineKeyboardMarkup.builder().keyboard(rows).build();
+    }
+
+    private InlineKeyboardMarkup transactionDeleteConfirmMenu(String txId) {
+        return InlineKeyboardMarkup.builder()
+                .keyboard(List.of(
+                        new InlineKeyboardRow(btn("🗑 Да, удалить", "mf:tx:delete_confirm:" + txId), btn("Отмена", "mf:tx:view:" + txId))
+                ))
+                .build();
     }
 
     private InlineKeyboardMarkup transactionEditCategoryMenu(UUID budgetId, CategoryKind kind, String txId) {
@@ -3519,28 +3533,9 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
             return;
         }
-        conversationService.clear(userId);
-        sender.sendText(chatId, "Как искать транзакцию?", transactionFindMenu());
-    }
-
-    private void onTransactionFindIdStart(long chatId, UUID userId) {
-        UUID budgetId = budgetService.getActiveBudgetId(userId);
-        if (budgetId == null) {
-            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
-            return;
-        }
-        conversationService.set(userId, "tx_find", new HashMap<>(Map.of("step", "id")));
-        sender.sendText(chatId, "Введите ID транзакции", transactionFindBackMenu());
-    }
-
-    private void onTransactionFindCounterpartyStart(long chatId, UUID userId) {
-        UUID budgetId = budgetService.getActiveBudgetId(userId);
-        if (budgetId == null) {
-            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
-            return;
-        }
-        conversationService.set(userId, "tx_find", new HashMap<>(Map.of("step", "counterparty")));
-        sender.sendText(chatId, "Введите текст контрагента для поиска", transactionFindBackMenu());
+        conversationService.set(userId, "tx_find", new HashMap<>(Map.of("step", "query")));
+        sender.sendText(chatId, "Введите ID транзакции (можно несколько через запятую/пробел/с новой строки) или текст контрагента для поиска",
+                transactionFindBackMenu());
     }
 
     private void onTransactionView(long chatId, UUID userId, String txId) {
@@ -3560,6 +3555,43 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return;
         }
         sender.sendText(chatId, transactionDetailsText(t), transactionViewMenu(t));
+    }
+
+    private void onTransactionDeleteStart(long chatId, UUID userId, String txId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        if (!budgetService.isAdmin(budgetId, userId)) {
+            sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+            return;
+        }
+        Transaction t = transactionService.findById(budgetId, UUID.fromString(txId)).orElse(null);
+        if (t == null) {
+            sender.sendText(chatId, "Транзакция не найдена", transactionFindMenu());
+            return;
+        }
+        sender.sendText(chatId, "Удалить транзакцию безвозвратно?\n\n" + transactionDetailsText(t), transactionDeleteConfirmMenu(txId));
+    }
+
+    private void onTransactionDeleteConfirm(long chatId, UUID userId, String txId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет", menuForUser(userId));
+            return;
+        }
+        if (!budgetService.isAdmin(budgetId, userId)) {
+            sender.sendText(chatId, "Нужна роль ADMIN", menuForUser(userId));
+            return;
+        }
+        try {
+            transactionService.delete(budgetId, UUID.fromString(txId));
+        } catch (Exception e) {
+            sender.sendText(chatId, "❌ Ошибка: " + e.getMessage(), transactionFindMenu());
+            return;
+        }
+        sender.sendText(chatId, "✅ Транзакция удалена", transactionFindMenu());
     }
 
     private void onTransactionTagsStart(long chatId, UUID userId, String txId) {

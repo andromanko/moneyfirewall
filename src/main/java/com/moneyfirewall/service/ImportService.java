@@ -136,7 +136,10 @@ public class ImportService {
             BigDecimal amount = op.amount();
             String counterpartyRaw = categoryService.normalizeMtbankMinskCounterparty(op.counterpartyRaw());
             String normalizedCounterparty = merchantAliasService.normalize(budgetId, counterpartyRaw);
-            String externalHash = externalHash(budgetId, op.occurredAt(), amount, op.currency(), dir, account.getName(), normalizedCounterparty);
+            // Hashed on the raw counterparty text, not the alias-normalized one: a merchant alias
+            // or nickname rule added after the first import must not change the identity of an
+            // already-imported transaction, or a re-import would treat it as new and duplicate it.
+            String externalHash = externalHash(budgetId, op.occurredAt(), amount, op.currency(), dir, account.getName(), counterpartyRaw);
 
             if (transactionRepository.existsByBudgetIdAndExternalHash(budgetId, externalHash)) {
                 skipped++;
@@ -232,7 +235,7 @@ public class ImportService {
         return HexFormat.of().formatHex(d);
     }
 
-    private String externalHash(UUID budgetId, Instant occurredAt, BigDecimal amount, String currency, TransactionDirection direction, String accountName, String normalizedCounterparty) throws Exception {
+    private String externalHash(UUID budgetId, Instant occurredAt, BigDecimal amount, String currency, TransactionDirection direction, String accountName, String counterpartyRaw) throws Exception {
         LocalDate d = occurredAt.atZone(ZoneOffset.UTC).toLocalDate();
         String s = budgetId
                 + "|" + d
@@ -240,7 +243,7 @@ public class ImportService {
                 + "|" + currency.toUpperCase()
                 + "|" + direction
                 + "|" + accountName.trim()
-                + "|" + (normalizedCounterparty == null ? "" : normalizedCounterparty.trim().toLowerCase());
+                + "|" + (counterpartyRaw == null ? "" : counterpartyRaw.trim().toLowerCase());
         return sha256Hex(s.getBytes(StandardCharsets.UTF_8));
     }
 

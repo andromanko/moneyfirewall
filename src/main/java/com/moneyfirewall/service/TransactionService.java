@@ -225,5 +225,11 @@ public class TransactionService {
         t.setTags(tags == null || tags.isBlank() ? null : tags.trim());
         return transactionRepository.save(t);
     }
+
+    @Transactional
+    public void delete(UUID budgetId, UUID transactionId) {
+        Transaction t = transactionRepository.findByIdAndBudgetId(transactionId, budgetId).orElseThrow();
+        transactionRepository.delete(t);
+    }
 }
 
