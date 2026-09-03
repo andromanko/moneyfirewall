@@ -4219,11 +4219,11 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
 
     private InlineKeyboardMarkup incomeCategoryMenuByUsage(UUID budgetId, String wizardKey) {
         List<InlineKeyboardRow> rows = new ArrayList<>();
-        for (Category c : categoryService.listIncomeByUsage(budgetId)) {
-            rows.add(new InlineKeyboardRow(btn(
-                    categoryService.displayName(c),
-                    "wiz:category:" + wizardKey + ":" + c.getId()
-            )));
+        for (Category p : categoryService.listParents(budgetId, CategoryKind.INCOME)) {
+            rows.add(new InlineKeyboardRow(btn(p.getName(), "wiz:category:" + wizardKey + ":" + p.getId())));
+            for (Category c : categoryService.listChildren(budgetId, CategoryKind.INCOME, p.getId())) {
+                rows.add(new InlineKeyboardRow(btn("— " + c.getName(), "wiz:category:" + wizardKey + ":" + c.getId())));
+            }
         }
         rows.add(new InlineKeyboardRow(btn("💸 Расходные (компенсация)", "wiz:category:" + wizardKey + ":expense")));
         rows.add(new InlineKeyboardRow(btn("➕ Новая категория", "wiz:category:" + wizardKey + ":newcat")));
@@ -4233,11 +4233,16 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
 
     private InlineKeyboardMarkup incomeExpenseCategoryMenu(UUID budgetId, String wizardKey) {
         List<InlineKeyboardRow> rows = new ArrayList<>();
-        for (Category c : categoryService.listExpenseByUsage(budgetId)) {
-            rows.add(new InlineKeyboardRow(btn(
-                    categoryService.displayName(c),
-                    "wiz:category:" + wizardKey + ":" + c.getId()
-            )));
+        Category cash = categoryService.ensureCash(budgetId);
+        rows.add(new InlineKeyboardRow(btn("🏧 Наличные (CASH)", "wiz:category:" + wizardKey + ":" + cash.getId())));
+        for (Category p : categoryService.listParents(budgetId, CategoryKind.EXPENSE)) {
+            if (CategoryService.CASH.equalsIgnoreCase(p.getName())) {
+                continue;
+            }
+            rows.add(new InlineKeyboardRow(btn(p.getName(), "wiz:category:" + wizardKey + ":" + p.getId())));
+            for (Category c : categoryService.listChildren(budgetId, CategoryKind.EXPENSE, p.getId())) {
+                rows.add(new InlineKeyboardRow(btn("— " + c.getName(), "wiz:category:" + wizardKey + ":" + c.getId())));
+            }
         }
         rows.add(new InlineKeyboardRow(btn("⬅️ Назад", "wiz:category:" + wizardKey + ":back")));
         rows.add(new InlineKeyboardRow(btn("Отмена", "wiz:confirm:" + wizardKey + ":cancel")));
