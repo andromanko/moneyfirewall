@@ -226,8 +226,8 @@ public class ImportService {
             TransactionService.DedupResult dedup = transactionService.deduplicateExactMatches(
                     budgetId, minOccurred.minusSeconds(1), maxOccurred.plusSeconds(1));
             duplicatesRemoved = dedup.deleted();
-            if (!dedup.ambiguousGroups().isEmpty()) {
-                log.warn("import dedup ambiguous groups sessionId={} groups={}", saved.getId(), dedup.ambiguousGroups());
+            if (!dedup.categoryConflicts().isEmpty()) {
+                log.warn("import dedup collapsed groups with differing categories sessionId={} groups={}", saved.getId(), dedup.categoryConflicts());
             }
         }
         return new ImportResult(saved.getId(), inserted, false, duplicatesRemoved);

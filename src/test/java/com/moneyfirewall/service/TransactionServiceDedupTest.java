@@ -27,27 +27,29 @@ import static org.mockito.Mockito.when;
 /**
  * A re-import bug (see ImportService's externalHash comment: an alias added between imports used
  * to change the dedup hash) leaves two rows with the same account/timestamp/amount/currency/
- * direction but different categorization. That combination can never be a legitimate coincidence,
- * so the sweep treats it as a bug and drops the uncategorized copy — but only when categorization
- * actually splits the group; if it doesn't, the ambiguity is reported instead of guessed at.
+ * direction. That combination can never be a legitimate coincidence, so every such group is
+ * collapsed to a single survivor: uncategorized copies go first when the group is mixed, and
+ * whatever's left is further collapsed to the earliest-created row, since two rows tied on
+ * everything but category disagree about which category is right, not about whether they're
+ * duplicates.
  */
 class TransactionServiceDedupTest {
     private static final UUID BUDGET_ID = UUID.randomUUID();
+    private static final Instant OCCURRED_AT = Instant.parse("2026-08-15T10:00:00Z");
 
     @Test
-    void uncategorizedCopyOfAnExactMatchIsDeleted() {
+    void uncategorizedCopyOfAMixedGroupIsDeleted() {
         TransactionRepository repo = mock(TransactionRepository.class);
         Account account = account("Alfa");
-        Instant occurredAt = Instant.parse("2026-08-15T10:00:00Z");
 
-        Transaction categorized = tx(account, occurredAt, "100", "BYN", TransactionDirection.EXPENSE, category("Продукты"));
-        Transaction uncategorized = tx(account, occurredAt, "100", "BYN", TransactionDirection.EXPENSE, null);
+        Transaction categorized = tx(account, OCCURRED_AT, "100", "BYN", TransactionDirection.EXPENSE, category("Продукты"), t(1));
+        Transaction uncategorized = tx(account, OCCURRED_AT, "100", "BYN", TransactionDirection.EXPENSE, null, t(2));
         when(repo.findAllForDuplicateScan(BUDGET_ID)).thenReturn(List.of(categorized, uncategorized));
 
         TransactionService.DedupResult result = newService(repo).deduplicateExactMatches(BUDGET_ID, null, null);
 
         assertEquals(1, result.deleted());
-        assertTrue(result.ambiguousGroups().isEmpty());
+        assertTrue(result.categoryConflicts().isEmpty());
         verify(repo, times(1)).delete(uncategorized);
         verify(repo, never()).delete(categorized);
     }
@@ -56,10 +58,9 @@ class TransactionServiceDedupTest {
     void differingAmountsAreNotTreatedAsDuplicates() {
         TransactionRepository repo = mock(TransactionRepository.class);
         Account account = account("Alfa");
-        Instant occurredAt = Instant.parse("2026-08-15T10:00:00Z");
 
-        Transaction a = tx(account, occurredAt, "100", "BYN", TransactionDirection.EXPENSE, null);
-        Transaction b = tx(account, occurredAt, "150", "BYN", TransactionDirection.EXPENSE, null);
+        Transaction a = tx(account, OCCURRED_AT, "100", "BYN", TransactionDirection.EXPENSE, null, t(1));
+        Transaction b = tx(account, OCCURRED_AT, "150", "BYN", TransactionDirection.EXPENSE, null, t(2));
         when(repo.findAllForDuplicateScan(BUDGET_ID)).thenReturn(List.of(a, b));
 
         TransactionService.DedupResult result = newService(repo).deduplicateExactMatches(BUDGET_ID, null, null);
@@ -69,35 +70,55 @@ class TransactionServiceDedupTest {
     }
 
     @Test
-    void bothCategorizedIsReportedAsAmbiguousNotDeleted() {
+    void bothCategorizedKeepsTheEarlierAndFlagsTheCategoryDifference() {
         TransactionRepository repo = mock(TransactionRepository.class);
         Account account = account("Alfa");
-        Instant occurredAt = Instant.parse("2026-08-15T10:00:00Z");
 
-        Transaction a = tx(account, occurredAt, "100", "BYN", TransactionDirection.EXPENSE, category("Продукты"));
-        Transaction b = tx(account, occurredAt, "100", "BYN", TransactionDirection.EXPENSE, category("Транспорт"));
-        when(repo.findAllForDuplicateScan(BUDGET_ID)).thenReturn(List.of(a, b));
+        Transaction earlier = tx(account, OCCURRED_AT, "100", "BYN", TransactionDirection.EXPENSE, category("Продукты"), t(1));
+        Transaction later = tx(account, OCCURRED_AT, "100", "BYN", TransactionDirection.EXPENSE, category("Транспорт"), t(2));
+        when(repo.findAllForDuplicateScan(BUDGET_ID)).thenReturn(List.of(earlier, later));
 
         TransactionService.DedupResult result = newService(repo).deduplicateExactMatches(BUDGET_ID, null, null);
 
-        assertEquals(0, result.deleted());
-        assertEquals(1, result.ambiguousGroups().size());
-        verify(repo, never()).delete(any());
+        assertEquals(1, result.deleted());
+        assertEquals(1, result.categoryConflicts().size());
+        verify(repo, times(1)).delete(later);
+        verify(repo, never()).delete(earlier);
+    }
+
+    @Test
+    void bothUncategorizedKeepsTheEarlierWithoutFlaggingAConflict() {
+        TransactionRepository repo = mock(TransactionRepository.class);
+        Account account = account("Alfa");
+
+        Transaction earlier = tx(account, OCCURRED_AT, "100", "BYN", TransactionDirection.EXPENSE, null, t(1));
+        Transaction later = tx(account, OCCURRED_AT, "100", "BYN", TransactionDirection.EXPENSE, null, t(2));
+        when(repo.findAllForDuplicateScan(BUDGET_ID)).thenReturn(List.of(earlier, later));
+
+        TransactionService.DedupResult result = newService(repo).deduplicateExactMatches(BUDGET_ID, null, null);
+
+        assertEquals(1, result.deleted());
+        assertTrue(result.categoryConflicts().isEmpty());
+        verify(repo, times(1)).delete(later);
+        verify(repo, never()).delete(earlier);
     }
 
     @Test
     void differentScaleOfTheSameAmountStillMatches() {
         TransactionRepository repo = mock(TransactionRepository.class);
         Account account = account("Alfa");
-        Instant occurredAt = Instant.parse("2026-08-15T10:00:00Z");
 
-        Transaction categorized = tx(account, occurredAt, "100", "BYN", TransactionDirection.EXPENSE, category("Продукты"));
-        Transaction uncategorized = tx(account, occurredAt, "100.00", "BYN", TransactionDirection.EXPENSE, null);
+        Transaction categorized = tx(account, OCCURRED_AT, "100", "BYN", TransactionDirection.EXPENSE, category("Продукты"), t(1));
+        Transaction uncategorized = tx(account, OCCURRED_AT, "100.00", "BYN", TransactionDirection.EXPENSE, null, t(2));
         when(repo.findAllForDuplicateScan(BUDGET_ID)).thenReturn(List.of(categorized, uncategorized));
 
         TransactionService.DedupResult result = newService(repo).deduplicateExactMatches(BUDGET_ID, null, null);
 
         assertEquals(1, result.deleted());
+    }
+
+    private static Instant t(int secondsOffset) {
+        return Instant.parse("2026-08-15T00:00:00Z").plusSeconds(secondsOffset);
     }
 
     private TransactionService newService(TransactionRepository repo) {
@@ -126,7 +147,7 @@ class TransactionServiceDedupTest {
         return c;
     }
 
-    private Transaction tx(Account account, Instant occurredAt, String amount, String currency, TransactionDirection direction, Category category) {
+    private Transaction tx(Account account, Instant occurredAt, String amount, String currency, TransactionDirection direction, Category category, Instant createdAt) {
         Transaction t = new Transaction();
         t.setId(UUID.randomUUID());
         t.setAccount(account);
@@ -135,6 +156,7 @@ class TransactionServiceDedupTest {
         t.setCurrency(currency);
         t.setDirection(direction);
         t.setCategory(category);
+        t.setCreatedAt(createdAt);
         return t;
     }
 }

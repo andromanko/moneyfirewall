@@ -635,10 +635,10 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             return;
         }
         TransactionService.DedupResult dedup = transactionService.deduplicateExactMatches(budgetId, null, null);
-        StringBuilder sb = new StringBuilder("Удалено дублей без категории: " + dedup.deleted());
-        if (!dedup.ambiguousGroups().isEmpty()) {
-            sb.append("\n\nТребуют ручной проверки (совпадают по счёту/времени/сумме, но категория есть у всех или ни у одной):\n");
-            for (String g : dedup.ambiguousGroups()) {
+        StringBuilder sb = new StringBuilder("Удалено дублей: " + dedup.deleted());
+        if (!dedup.categoryConflicts().isEmpty()) {
+            sb.append("\n\nСреди удалённых были с другой категорией, чем у оставленной записи — стоит перепроверить:\n");
+            for (String g : dedup.categoryConflicts()) {
                 sb.append("• ").append(g).append('\n');
             }
         }
@@ -676,7 +676,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             } else {
                 String msg = "Импорт: " + res.sessionId() + ", добавлено: " + res.inserted();
                 if (res.duplicatesRemoved() > 0) {
-                    msg += "\nНайдены и удалены дубли без категории: " + res.duplicatesRemoved();
+                    msg += "\nНайдены и удалены дубли (тот же счёт/время/сумма): " + res.duplicatesRemoved();
                 }
                 sender.sendText(chatId, msg);
             }
@@ -2513,7 +2513,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 "Доход — добавить поступление\n" +
                 "Трата — добавить расход\n" +
                 "Перевод — перевод между счетами/наличными\n" +
-                "Импорт — меню выбора банка (PDF/JSON), затем файл; после импорта автоматически ищутся и удаляются дубли (тот же счёт/время/сумма) без категории\n" +
+                "Импорт — меню выбора банка (PDF/JSON), затем файл; после импорта автоматически ищутся и удаляются дубли (тот же счёт/время/сумма) — остаётся одна запись\n" +
                 "/dedupe_scan — вручную прогнать поиск дублей по всей истории бюджета (ADMIN)\n" +
                 "Отчёт — период кнопками или свой (даты YYYY-MM-DD)\n" +
                 "Счета / Участники — управление в рамках активного бюджета\n" +

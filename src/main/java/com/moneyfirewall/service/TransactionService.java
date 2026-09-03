@@ -17,6 +17,7 @@ import com.moneyfirewall.repo.UserRepository;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -238,8 +239,10 @@ public class TransactionService {
     /**
      * Same account, timestamp, amount, currency and direction is not a coincidence — it's a bug
      * (typically a re-import after a merchant alias or category rule changed the match, see
-     * ImportService.externalHash). Within such a group, only the uncategorized copy is deleted:
-     * if categorization split unevenly some other way, the ambiguity is surfaced instead of guessed at.
+     * ImportService.externalHash). Every such group is collapsed to one survivor: if categorization
+     * splits the group, the uncategorized copies go first; whatever is left is further collapsed to
+     * the earliest-created row, since two rows tied on everything but category disagree about which
+     * category is right, not about whether they're duplicates.
      */
     @Transactional
     public DedupResult deduplicateExactMatches(UUID budgetId, Instant from, Instant to) {
@@ -253,26 +256,37 @@ public class TransactionService {
         }
 
         List<Transaction> toDelete = new ArrayList<>();
-        List<String> ambiguous = new ArrayList<>();
+        List<String> categoryConflicts = new ArrayList<>();
         for (List<Transaction> group : groups.values()) {
             if (group.size() < 2) {
                 continue;
             }
             List<Transaction> categorized = group.stream().filter(t -> t.getCategory() != null).toList();
             List<Transaction> uncategorized = group.stream().filter(t -> t.getCategory() == null).toList();
+            List<Transaction> survivors = !categorized.isEmpty() && !uncategorized.isEmpty() ? categorized : group;
             if (!categorized.isEmpty() && !uncategorized.isEmpty()) {
                 toDelete.addAll(uncategorized);
-            } else {
-                Transaction sample = group.get(0);
-                ambiguous.add(sample.getOccurredAt() + " " + sample.getAmount() + " " + sample.getCurrency()
-                        + " " + sample.getAccount().getName() + " x" + group.size());
+            }
+            if (survivors.size() > 1) {
+                Transaction keep = survivors.stream().min(Comparator.comparing(Transaction::getCreatedAt)).orElseThrow();
+                List<Transaction> extras = survivors.stream().filter(t -> t != keep).toList();
+                toDelete.addAll(extras);
+                boolean categoryMismatch = extras.stream().anyMatch(t -> !categoryIdOf(t).equals(categoryIdOf(keep)));
+                if (categoryMismatch) {
+                    categoryConflicts.add(keep.getOccurredAt() + " " + keep.getAmount() + " " + keep.getCurrency()
+                            + " " + keep.getAccount().getName() + " x" + survivors.size());
+                }
             }
         }
         toDelete.forEach(transactionRepository::delete);
-        return new DedupResult(toDelete.size(), ambiguous);
+        return new DedupResult(toDelete.size(), categoryConflicts);
     }
 
-    public record DedupResult(int deleted, List<String> ambiguousGroups) {}
+    private static Optional<UUID> categoryIdOf(Transaction t) {
+        return t.getCategory() == null ? Optional.empty() : Optional.of(t.getCategory().getId());
+    }
+
+    public record DedupResult(int deleted, List<String> categoryConflicts) {}
 
     private record DedupKey(UUID accountId, Instant occurredAt, BigDecimal amount, String currency, TransactionDirection direction) {}
 }
