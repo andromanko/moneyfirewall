@@ -48,6 +48,7 @@ public class ImportService {
     private final TransferLinkingService transferLinkingService;
     private final CategoryRuleService categoryRuleService;
     private final CategoryService categoryService;
+    private final TransactionService transactionService;
 
     public ImportService(
             ImportSessionRepository importSessionRepository,
@@ -59,7 +60,8 @@ public class ImportService {
             MerchantAliasService merchantAliasService,
             TransferLinkingService transferLinkingService,
             CategoryRuleService categoryRuleService,
-            CategoryService categoryService
+            CategoryService categoryService,
+            TransactionService transactionService
     ) {
         this.importSessionRepository = importSessionRepository;
         this.transactionRepository = transactionRepository;
@@ -71,6 +73,7 @@ public class ImportService {
         this.transferLinkingService = transferLinkingService;
         this.categoryRuleService = categoryRuleService;
         this.categoryService = categoryService;
+        this.transactionService = transactionService;
     }
 
     public boolean canImport(String bankCode, ImportFileType fileType) {
@@ -86,7 +89,7 @@ public class ImportService {
         Optional<ImportSession> existing = importSessionRepository.findByBudgetIdAndSha256(budgetId, sha256);
         if (existing.isPresent()) {
             log.debug("import duplicate file budgetId={} existingSessionId={}", budgetId, existing.get().getId());
-            return new ImportResult(existing.get().getId(), 0, true);
+            return new ImportResult(existing.get().getId(), 0, true, 0);
         }
 
         Budget budget = budgetRepository.findById(budgetId).orElseThrow();
@@ -212,12 +215,22 @@ public class ImportService {
 
         saved.setStatus(ImportStatus.APPLIED);
         importSessionRepository.save(saved);
+        int duplicatesRemoved = 0;
         if (!ops.isEmpty()) {
             Instant minOccurred = ops.stream().map(ParsedOperation::occurredAt).min(Comparator.naturalOrder()).orElseThrow();
             Instant maxOccurred = ops.stream().map(ParsedOperation::occurredAt).max(Comparator.naturalOrder()).orElseThrow();
             transferLinkingService.autoLinkAfterImport(budgetId, minOccurred, maxOccurred);
+
+            // Same account/timestamp/amount/currency/direction twice is always a re-import bug (see
+            // externalHash's comment above), so sweep the affected window and drop the uncategorized copy.
+            TransactionService.DedupResult dedup = transactionService.deduplicateExactMatches(
+                    budgetId, minOccurred.minusSeconds(1), maxOccurred.plusSeconds(1));
+            duplicatesRemoved = dedup.deleted();
+            if (!dedup.ambiguousGroups().isEmpty()) {
+                log.warn("import dedup ambiguous groups sessionId={} groups={}", saved.getId(), dedup.ambiguousGroups());
+            }
         }
-        return new ImportResult(saved.getId(), inserted, false);
+        return new ImportResult(saved.getId(), inserted, false, duplicatesRemoved);
     }
 
     @Transactional
@@ -247,6 +260,6 @@ public class ImportService {
         return sha256Hex(s.getBytes(StandardCharsets.UTF_8));
     }
 
-    public record ImportResult(UUID sessionId, int inserted, boolean alreadyImported) {}
+    public record ImportResult(UUID sessionId, int inserted, boolean alreadyImported, int duplicatesRemoved) {}
 }
 

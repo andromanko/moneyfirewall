@@ -16,7 +16,10 @@ import com.moneyfirewall.repo.TransferGroupRepository;
 import com.moneyfirewall.repo.UserRepository;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -231,5 +234,46 @@ public class TransactionService {
         Transaction t = transactionRepository.findByIdAndBudgetId(transactionId, budgetId).orElseThrow();
         transactionRepository.delete(t);
     }
+
+    /**
+     * Same account, timestamp, amount, currency and direction is not a coincidence — it's a bug
+     * (typically a re-import after a merchant alias or category rule changed the match, see
+     * ImportService.externalHash). Within such a group, only the uncategorized copy is deleted:
+     * if categorization split unevenly some other way, the ambiguity is surfaced instead of guessed at.
+     */
+    @Transactional
+    public DedupResult deduplicateExactMatches(UUID budgetId, Instant from, Instant to) {
+        List<Transaction> candidates = from == null || to == null
+                ? transactionRepository.findAllForDuplicateScan(budgetId)
+                : transactionRepository.findForDuplicateScan(budgetId, from, to);
+        Map<DedupKey, List<Transaction>> groups = new LinkedHashMap<>();
+        for (Transaction t : candidates) {
+            DedupKey key = new DedupKey(t.getAccount().getId(), t.getOccurredAt(), t.getAmount().stripTrailingZeros(), t.getCurrency(), t.getDirection());
+            groups.computeIfAbsent(key, k -> new ArrayList<>()).add(t);
+        }
+
+        List<Transaction> toDelete = new ArrayList<>();
+        List<String> ambiguous = new ArrayList<>();
+        for (List<Transaction> group : groups.values()) {
+            if (group.size() < 2) {
+                continue;
+            }
+            List<Transaction> categorized = group.stream().filter(t -> t.getCategory() != null).toList();
+            List<Transaction> uncategorized = group.stream().filter(t -> t.getCategory() == null).toList();
+            if (!categorized.isEmpty() && !uncategorized.isEmpty()) {
+                toDelete.addAll(uncategorized);
+            } else {
+                Transaction sample = group.get(0);
+                ambiguous.add(sample.getOccurredAt() + " " + sample.getAmount() + " " + sample.getCurrency()
+                        + " " + sample.getAccount().getName() + " x" + group.size());
+            }
+        }
+        toDelete.forEach(transactionRepository::delete);
+        return new DedupResult(toDelete.size(), ambiguous);
+    }
+
+    public record DedupResult(int deleted, List<String> ambiguousGroups) {}
+
+    private record DedupKey(UUID accountId, Instant occurredAt, BigDecimal amount, String currency, TransactionDirection direction) {}
 }
 

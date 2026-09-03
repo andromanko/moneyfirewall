@@ -70,6 +70,28 @@ public interface TransactionRepository extends JpaRepository<Transaction, UUID> 
 
     @Query("""
             select t from Transaction t
+            left join fetch t.category
+            left join fetch t.account
+            where t.budget.id = :budgetId
+              and t.transferGroup is null
+              and t.account is not null
+              and t.occurredAt >= :from
+              and t.occurredAt < :to
+            """)
+    List<Transaction> findForDuplicateScan(@Param("budgetId") UUID budgetId, @Param("from") Instant from, @Param("to") Instant to);
+
+    @Query("""
+            select t from Transaction t
+            left join fetch t.category
+            left join fetch t.account
+            where t.budget.id = :budgetId
+              and t.transferGroup is null
+              and t.account is not null
+            """)
+    List<Transaction> findAllForDuplicateScan(@Param("budgetId") UUID budgetId);
+
+    @Query("""
+            select t from Transaction t
             left join fetch t.category c
             left join fetch c.parentCategory
             left join fetch t.account

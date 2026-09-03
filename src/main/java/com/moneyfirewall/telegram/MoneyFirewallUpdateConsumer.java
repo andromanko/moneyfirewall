@@ -218,6 +218,7 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             case "/transfer" -> onTransfer(chatId, user.getId(), arg);
             case "/import" -> onImport(chatId, user.getId(), arg);
             case "/import_rollback" -> onImportRollback(chatId, user.getId(), arg);
+            case "/dedupe_scan" -> onDedupeScan(chatId, user.getId());
             case "/alias_add", "/nickname_add" -> onAliasAdd(chatId, user.getId(), arg);
             case "/alias_list", "/nickname_list" -> onNicknamesMenu(chatId, user.getId());
             case "/alias_delete", "/nickname_delete" -> onAliasDelete(chatId, user.getId(), arg);
@@ -623,6 +624,27 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
         }
     }
 
+    private void onDedupeScan(long chatId, UUID userId) {
+        UUID budgetId = budgetService.getActiveBudgetId(userId);
+        if (budgetId == null) {
+            sender.sendText(chatId, "Сначала выбери бюджет: /budget_use <uuid>");
+            return;
+        }
+        if (!budgetService.isAdmin(budgetId, userId)) {
+            sender.sendText(chatId, "Нужна роль ADMIN");
+            return;
+        }
+        TransactionService.DedupResult dedup = transactionService.deduplicateExactMatches(budgetId, null, null);
+        StringBuilder sb = new StringBuilder("Удалено дублей без категории: " + dedup.deleted());
+        if (!dedup.ambiguousGroups().isEmpty()) {
+            sb.append("\n\nТребуют ручной проверки (совпадают по счёту/времени/сумме, но категория есть у всех или ни у одной):\n");
+            for (String g : dedup.ambiguousGroups()) {
+                sb.append("• ").append(g).append('\n');
+            }
+        }
+        sender.sendText(chatId, sb.toString());
+    }
+
     private boolean handleImportDocument(long chatId, UUID userId, Update update) {
         State st = conversationService.get(userId).orElse(null);
         if (st == null || !"import".equals(st.key())) {
@@ -652,7 +674,11 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             if (res.alreadyImported()) {
                 sender.sendText(chatId, "Уже импортировано: " + res.sessionId());
             } else {
-                sender.sendText(chatId, "Импорт: " + res.sessionId() + ", добавлено: " + res.inserted());
+                String msg = "Импорт: " + res.sessionId() + ", добавлено: " + res.inserted();
+                if (res.duplicatesRemoved() > 0) {
+                    msg += "\nНайдены и удалены дубли без категории: " + res.duplicatesRemoved();
+                }
+                sender.sendText(chatId, msg);
             }
         } catch (Exception e) {
             conversationService.clear(userId);
@@ -2487,7 +2513,8 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 "Доход — добавить поступление\n" +
                 "Трата — добавить расход\n" +
                 "Перевод — перевод между счетами/наличными\n" +
-                "Импорт — меню выбора банка (PDF/JSON), затем файл\n" +
+                "Импорт — меню выбора банка (PDF/JSON), затем файл; после импорта автоматически ищутся и удаляются дубли (тот же счёт/время/сумма) без категории\n" +
+                "/dedupe_scan — вручную прогнать поиск дублей по всей истории бюджета (ADMIN)\n" +
                 "Отчёт — период кнопками или свой (даты YYYY-MM-DD)\n" +
                 "Счета / Участники — управление в рамках активного бюджета\n" +
                 "Никнеймы — короткие имена контрагентов в отчётах (фраза из выписки → никнейм)\n" +
