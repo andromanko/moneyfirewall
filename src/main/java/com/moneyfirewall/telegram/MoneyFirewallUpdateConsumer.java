@@ -2267,6 +2267,12 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                     sender.sendText(chatId, "Выбери категорию дохода", incomeCategoryMenuByUsage(budgetId, key));
                     return;
                 }
+                if ("expense".equals(key) || "cash_expense".equals(key) || "expense_manual".equals(key)) {
+                    payload.put("step", "category");
+                    conversationService.set(userId, key, payload);
+                    sender.sendText(chatId, "Выбери категорию", expenseCategoryMenuByUsage(budgetId, key));
+                    return;
+                }
             }
             if ("expense".equals(p[3])) {
                 if (!"income".equals(key) && !"cash_income".equals(key)) {
@@ -2276,6 +2282,16 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 payload.put("step", "category");
                 conversationService.set(userId, key, payload);
                 sender.sendText(chatId, "Компенсация расхода: выбери категорию", incomeExpenseCategoryMenu(budgetId, key));
+                return;
+            }
+            if ("income".equals(p[3])) {
+                if (!"expense".equals(key) && !"cash_expense".equals(key) && !"expense_manual".equals(key)) {
+                    sender.sendText(chatId, "Ошибка шага", menuForUser(userId));
+                    return;
+                }
+                payload.put("step", "category");
+                conversationService.set(userId, key, payload);
+                sender.sendText(chatId, "Расход по доходной категории: выбери категорию", expenseIncomeCategoryMenu(budgetId, key));
                 return;
             }
             if ("newcat".equals(p[3])) {
@@ -2479,6 +2495,8 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
                 "Транзакция — введите ID или текст контрагента, поиск определяется автоматически; можно ввести несколько ID через запятую, пробел или с новой строки, тогда изменение категории или тега применится сразу ко всем найденным\n" +
                 "Транзакция → 🏷 Тег/комментарий, 🗑 Удалить — задать свободный текст или удалить транзакцию безвозвратно\n" +
                 "Наличные: доход/расход/снятие — сумму можно ввести одной строкой с датой, валютой и комментарием, например: 15.08 100 USD такси (дата и валюта необязательны)\n" +
+                "Доход → 💸 Расходные (компенсация) — возврат по расходу: доход по расходной категории, уменьшает эту категорию в отчёте\n" +
+                "Трата → 📈 Доходные (расход) — расход по доходной категории (например, комиссия банка списана из зарплатной категории)\n" +
                 "/budget_currency <код> — валюта отчётов по умолчанию (в неё пересчитываются другие валюты)\n" +
                 "Сброс — вернуться в главное меню\n\n" +
                 "Сборка: " + buildInfoService.buildTime();
@@ -4267,6 +4285,22 @@ public class MoneyFirewallUpdateConsumer implements LongPollingUpdateConsumer {
             )));
         }
         rows.add(new InlineKeyboardRow(btn("Прочее", "wiz:category:" + wizardKey + ":misc")));
+        rows.add(new InlineKeyboardRow(btn("📈 Доходные (расход)", "wiz:category:" + wizardKey + ":income")));
+        rows.add(new InlineKeyboardRow(btn("Отмена", "wiz:confirm:" + wizardKey + ":cancel")));
+        return InlineKeyboardMarkup.builder().keyboard(rows).build();
+    }
+
+    /** Mirrors {@link #incomeExpenseCategoryMenu}: an expense recorded against an income category
+     * (e.g. a bank fee taken directly out of a salary category), rather than the other way round. */
+    private InlineKeyboardMarkup expenseIncomeCategoryMenu(UUID budgetId, String wizardKey) {
+        List<InlineKeyboardRow> rows = new ArrayList<>();
+        for (Category p : categoryService.listParents(budgetId, CategoryKind.INCOME)) {
+            rows.add(new InlineKeyboardRow(btn(p.getName(), "wiz:category:" + wizardKey + ":" + p.getId())));
+            for (Category c : categoryService.listChildren(budgetId, CategoryKind.INCOME, p.getId())) {
+                rows.add(new InlineKeyboardRow(btn("— " + c.getName(), "wiz:category:" + wizardKey + ":" + c.getId())));
+            }
+        }
+        rows.add(new InlineKeyboardRow(btn("⬅️ Назад", "wiz:category:" + wizardKey + ":back")));
         rows.add(new InlineKeyboardRow(btn("Отмена", "wiz:confirm:" + wizardKey + ":cancel")));
         return InlineKeyboardMarkup.builder().keyboard(rows).build();
     }

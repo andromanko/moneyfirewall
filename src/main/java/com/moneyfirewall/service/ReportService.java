@@ -363,7 +363,7 @@ public class ReportService {
             for (Map.Entry<CategoryPair, BigDecimal> e : entries) {
                 List<Object> row = new ArrayList<>(List.of(e.getKey().category(), e.getKey().subcategory()));
                 for (YearMonth ym : months) {
-                    row.add(categoryExpenseFormula(e.getKey().category(), e.getKey().subcategory(), ym));
+                    row.add(categoryNetExpenseFormula(e.getKey().category(), e.getKey().subcategory(), ym));
                 }
                 int rowNumber = summary.size() + 1;
                 row.add(totalFormula(rowNumber, firstMonthCol, lastMonthCol));
@@ -375,7 +375,7 @@ public class ReportService {
                 // directly on the parent (blank subcategory), via a category-only SUMIFS.
                 List<Object> row = new ArrayList<>(List.of(category, BY_CATEGORY_SUBTOTAL));
                 for (YearMonth ym : months) {
-                    row.add(categoryTotalFormula(category, ym));
+                    row.add(categoryNetTotalFormula(category, ym));
                 }
                 int rowNumber = summary.size() + 1;
                 row.add(totalFormula(rowNumber, firstMonthCol, lastMonthCol));
@@ -534,6 +534,30 @@ public class ReportService {
         return new FormulaCell("SUMIFS(" + txRange(TX_COL_AMOUNT_CONVERTED) + "," + txRange(TX_COL_CATEGORY) + ",\"" + escapeFormulaString(category)
                 + "\"," + txRange(TX_COL_DIRECTION) + ",\"Расход\","
                 + txRange(TX_COL_MONTH) + ",\"" + monthKey(ym) + "\")");
+    }
+
+    /** A refund entered as income against this expense category/subcategory (the "💸 Расходные
+     * (компенсация)" flow) — subtracted from the expense sum so the category shows net spend. */
+    private static FormulaCell categoryCompensationFormula(String category, String subcategory, YearMonth ym) {
+        return new FormulaCell("SUMIFS(" + txRange(TX_COL_AMOUNT_CONVERTED) + "," + txRange(TX_COL_CATEGORY) + ",\"" + escapeFormulaString(category)
+                + "\"," + txRange(TX_COL_SUBCATEGORY) + ",\"" + escapeFormulaString(subcategory) + "\"," + txRange(TX_COL_DIRECTION) + ",\"Доход\","
+                + txRange(TX_COL_MONTH) + ",\"" + monthKey(ym) + "\")");
+    }
+
+    private static FormulaCell categoryCompensationTotalFormula(String category, YearMonth ym) {
+        return new FormulaCell("SUMIFS(" + txRange(TX_COL_AMOUNT_CONVERTED) + "," + txRange(TX_COL_CATEGORY) + ",\"" + escapeFormulaString(category)
+                + "\"," + txRange(TX_COL_DIRECTION) + ",\"Доход\","
+                + txRange(TX_COL_MONTH) + ",\"" + monthKey(ym) + "\")");
+    }
+
+    private static FormulaCell categoryNetExpenseFormula(String category, String subcategory, YearMonth ym) {
+        return new FormulaCell(categoryExpenseFormula(category, subcategory, ym).expression()
+                + "-" + categoryCompensationFormula(category, subcategory, ym).expression());
+    }
+
+    private static FormulaCell categoryNetTotalFormula(String category, YearMonth ym) {
+        return new FormulaCell(categoryTotalFormula(category, ym).expression()
+                + "-" + categoryCompensationTotalFormula(category, ym).expression());
     }
 
 

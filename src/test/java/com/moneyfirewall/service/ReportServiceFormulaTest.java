@@ -55,6 +55,10 @@ class ReportServiceFormulaTest {
                 "Alfa", "Транспорт", "", "FEE", "Andrey", "2026-01"));
         transactions.add(txRow("2026-01-08T00:00:00Z", "Перевод", "999", "BYN", "", new BigDecimal("999"),
                 "Alfa", "", "", "", "Andrey", "2026-01"));
+        // A refund for the "Продукты/Магазины" expense above, entered as income against that same
+        // category via the "💸 Расходные (компенсация)" flow — must net against the category total.
+        transactions.add(txRow("2026-01-09T00:00:00Z", "Доход", "40", "BYN", "", new BigDecimal("40"),
+                "Alfa", "Продукты", "Магазины", "Возврат", "Andrey", "2026-01"));
 
         // February: one expense, one income, to prove months don't bleed into each other.
         transactions.add(txRow("2026-02-01T00:00:00Z", "Расход", "200", "BYN", "", new BigDecimal("200"),
@@ -79,23 +83,23 @@ class ReportServiceFormulaTest {
 
         try (XSSFWorkbook wb = new XSSFWorkbook(new ByteArrayInputStream(xlsx))) {
             Map<String, Double> metrics = readMetrics(wb.getSheet("Summary"));
-            assertEquals(1000.0, metrics.get("Доход|2026-01"));
+            assertEquals(1040.0, metrics.get("Доход|2026-01"), "1000 salary + 40 refund compensation");
             assertEquals(230.0, metrics.get("Расход|2026-01"), "100 + 35(yellow) + 50(green) + 30 + 15, CASH excluded");
-            assertEquals(770.0, metrics.get("Нетто|2026-01"));
+            assertEquals(810.0, metrics.get("Нетто|2026-01"));
             assertEquals(45.0, metrics.get("Комиссии|2026-01"), "30 by category + 15 by nickname");
             assertEquals(500.0, metrics.get("Доход|2026-02"));
             assertEquals(200.0, metrics.get("Расход|2026-02"));
             assertEquals(300.0, metrics.get("Нетто|2026-02"));
             assertEquals(0.0, metrics.getOrDefault("Комиссии|2026-02", 0.0));
-            assertEquals(1500.0, metrics.get("Доход|Итого"));
+            assertEquals(1540.0, metrics.get("Доход|Итого"));
             assertEquals(430.0, metrics.get("Расход|Итого"));
-            assertEquals(1070.0, metrics.get("Нетто|Итого"));
+            assertEquals(1110.0, metrics.get("Нетто|Итого"));
             assertEquals(45.0, metrics.get("Комиссии|Итого"));
 
             Map<String, Double> byCat = readCategoryBreakdown(wb.getSheet("Summary"));
-            assertEquals(135.0, byCat.get("Продукты|Магазины|2026-01"), "100 BYN + 35 yellow-converted EUR");
+            assertEquals(95.0, byCat.get("Продукты|Магазины|2026-01"), "100 BYN + 35 yellow-converted EUR - 40 refund compensation");
             assertEquals(200.0, byCat.get("Продукты|Магазины|2026-02"));
-            assertEquals(335.0, byCat.get("Продукты|Магазины|Итого"));
+            assertEquals(295.0, byCat.get("Продукты|Магазины|Итого"));
             assertEquals(65.0, byCat.get("Транспорт||2026-01"), "50 green-converted USD taxi + 15 FEE-nickname row, both categorized Транспорт");
             assertEquals(30.0, byCat.get("Комиссии||2026-01"));
         }
