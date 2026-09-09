@@ -13,7 +13,9 @@ import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.YearMonth;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -180,7 +182,7 @@ public class ReportService {
 
         List<YearMonth> months = monthRange(from, to);
         List<List<Object>> summary = buildSummarySheet(
-                months, categoryConvertedTotal, savingsRows(budgetId, savingsConvertedTotal, defaultCurrency), defaultCurrency);
+                months, categoryConvertedTotal, savingsRows(budgetId, savingsConvertedTotal, defaultCurrency), defaultCurrency, to);
 
         List<List<Object>> catRows = buildByCategorySheet(byCategoryAndCounterparty);
 
@@ -302,14 +304,15 @@ public class ReportService {
     }
 
     static List<List<Object>> buildSummarySheet(List<YearMonth> months, Map<CategoryPair, BigDecimal> categoryConvertedTotal) {
-        return buildSummarySheet(months, categoryConvertedTotal, List.of(), "");
+        return buildSummarySheet(months, categoryConvertedTotal, List.of(), "", null);
     }
 
     static List<List<Object>> buildSummarySheet(
             List<YearMonth> months,
             Map<CategoryPair, BigDecimal> categoryConvertedTotal,
             List<SavingsRow> savingsRows,
-            String defaultCurrency
+            String defaultCurrency,
+            Instant periodEnd
     ) {
         List<List<Object>> summary = new ArrayList<>();
         int firstMonthCol = 2; // column C (0-based index 2)
@@ -325,13 +328,13 @@ public class ReportService {
         summary.add(header);
 
         int incomeRow = summary.size() + 1;
-        summary.add(metricRow("Доход", incomeRow, months, ReportService::incomeFormula, firstMonthCol, lastMonthCol));
+        summary.add(metricRow("Доход", incomeRow, months, ReportService::incomeFormula, firstMonthCol, lastMonthCol, periodEnd));
         int expenseRow = summary.size() + 1;
-        summary.add(metricRow("Расход", expenseRow, months, ReportService::expenseFormula, firstMonthCol, lastMonthCol));
+        summary.add(metricRow("Расход", expenseRow, months, ReportService::expenseFormula, firstMonthCol, lastMonthCol, periodEnd));
         int netRowNumber = summary.size() + 1;
-        summary.add(netRow(incomeRow, expenseRow, netRowNumber, months, firstMonthCol, totalCol));
+        summary.add(netRow(incomeRow, expenseRow, netRowNumber, months, firstMonthCol, totalCol, periodEnd));
         int feesRow = summary.size() + 1;
-        summary.add(metricRow("Комиссии", feesRow, months, ReportService::feesFormula, firstMonthCol, lastMonthCol));
+        summary.add(metricRow("Комиссии", feesRow, months, ReportService::feesFormula, firstMonthCol, lastMonthCol, periodEnd));
 
         summary.add(List.of());
         List<Object> catHeader = new ArrayList<>(List.of("Категория", "Подкатегория"));
@@ -367,7 +370,7 @@ public class ReportService {
                 }
                 int rowNumber = summary.size() + 1;
                 row.add(totalFormula(rowNumber, firstMonthCol, lastMonthCol));
-                row.add(averageFormula(rowNumber, firstMonthCol, lastMonthCol));
+                row.add(averageFormula(rowNumber, firstMonthCol, lastMonthCol, periodEnd));
                 summary.add(row);
             }
             if (entries.size() > 1) {
@@ -379,7 +382,7 @@ public class ReportService {
                 }
                 int rowNumber = summary.size() + 1;
                 row.add(totalFormula(rowNumber, firstMonthCol, lastMonthCol));
-                row.add(averageFormula(rowNumber, firstMonthCol, lastMonthCol));
+                row.add(averageFormula(rowNumber, firstMonthCol, lastMonthCol, periodEnd));
                 summary.add(row);
             }
         }
@@ -463,17 +466,17 @@ public class ReportService {
     public record SavingsRow(String subcategory, String currency, BigDecimal totalInDefault, BigDecimal amountInOwnCurrency) {
     }
 
-    private static List<Object> metricRow(String label, int rowNumber, List<YearMonth> months, java.util.function.Function<YearMonth, FormulaCell> formulaFn, int firstMonthCol, int lastMonthCol) {
+    private static List<Object> metricRow(String label, int rowNumber, List<YearMonth> months, java.util.function.Function<YearMonth, FormulaCell> formulaFn, int firstMonthCol, int lastMonthCol, Instant periodEnd) {
         List<Object> row = new ArrayList<>(List.of(label, ""));
         for (YearMonth ym : months) {
             row.add(formulaFn.apply(ym));
         }
         row.add(totalFormula(rowNumber, firstMonthCol, lastMonthCol));
-        row.add(averageFormula(rowNumber, firstMonthCol, lastMonthCol));
+        row.add(averageFormula(rowNumber, firstMonthCol, lastMonthCol, periodEnd));
         return row;
     }
 
-    private static List<Object> netRow(int incomeRow, int expenseRow, int rowNumber, List<YearMonth> months, int firstMonthCol, int totalCol) {
+    private static List<Object> netRow(int incomeRow, int expenseRow, int rowNumber, List<YearMonth> months, int firstMonthCol, int totalCol, Instant periodEnd) {
         List<Object> row = new ArrayList<>(List.of("Нетто", ""));
         for (int i = 0; i < months.size(); i++) {
             String col = columnLetter(firstMonthCol + i);
@@ -490,7 +493,23 @@ public class ReportService {
     }
 
     private static FormulaCell averageFormula(int rowNumber, int firstMonthCol, int lastMonthCol) {
-        return new FormulaCell("AVERAGE(" + columnLetter(firstMonthCol) + rowNumber + ":" + columnLetter(lastMonthCol) + rowNumber + ")");
+        return averageFormula(rowNumber, firstMonthCol, lastMonthCol, null);
+    }
+
+    private static FormulaCell averageFormula(int rowNumber, int firstMonthCol, int lastMonthCol, Instant periodEnd) {
+        if (periodEnd == null || Instant.now().isAfter(periodEnd)) {
+            // Period is complete or unknown, use simple AVERAGE
+            return new FormulaCell("AVERAGE(" + columnLetter(firstMonthCol) + rowNumber + ":" + columnLetter(lastMonthCol) + rowNumber + ")");
+        }
+        // Period is incomplete: normalize by actual days passed in current month
+        LocalDate today = LocalDate.now();
+        LocalDate startOfMonth = today.withDayOfMonth(1);
+        long daysPassedInMonth = ChronoUnit.DAYS.between(startOfMonth, today) + 1; // +1 to count today
+        double proportionOfMonth = daysPassedInMonth / 30.0; // Assume 30-day month average
+        int monthCount = lastMonthCol - firstMonthCol + 1;
+        double effectiveMonths = (monthCount - 1) + proportionOfMonth; // All full months + partial last month
+        if (effectiveMonths <= 0) effectiveMonths = 1;
+        return new FormulaCell("SUM(" + columnLetter(firstMonthCol) + rowNumber + ":" + columnLetter(lastMonthCol) + rowNumber + ")/" + effectiveMonths);
     }
 
     private static String txRange(String column) {
