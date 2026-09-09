@@ -93,6 +93,11 @@ public class MtbankJsonStatementParser implements BankStatementParser {
 
         String place = op.hasNonNull("place") ? op.get("place").asText().trim() : "";
         String description = op.hasNonNull("description") ? op.get("description").asText().trim() : "";
+
+        // Collect additional details: transactionId/RRN for unique identification
+        String transactionId = op.hasNonNull("transactionId") ? op.get("transactionId").asText().trim() : "";
+        String rrn = op.hasNonNull("rrn") ? op.get("rrn").asText().trim() : "";
+
         // Combine place (channel) and description (actual recipient/purpose) when both exist
         String counterparty;
         if (!place.isEmpty() && !description.isEmpty() && !place.equalsIgnoreCase(description)) {
@@ -103,6 +108,13 @@ public class MtbankJsonStatementParser implements BankStatementParser {
             counterparty = description;
         } else {
             counterparty = "Imported";
+        }
+
+        // Add transaction ID or RRN as a unique reference if description doesn't already contain it
+        if (!transactionId.isEmpty() && !description.contains(transactionId)) {
+            description = description + (description.isEmpty() ? "" : " ") + "[TxnId:" + transactionId + "]";
+        } else if (!rrn.isEmpty() && !description.contains(rrn)) {
+            description = description + (description.isEmpty() ? "" : " ") + "[RRN:" + rrn + "]";
         }
 
         Instant occurredAt = parseOccurredAt(op);
