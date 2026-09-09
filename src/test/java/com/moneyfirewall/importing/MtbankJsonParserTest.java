@@ -71,13 +71,13 @@ class MtbankJsonParserTest {
         assertEquals("INCOME", topUp.direction());
         assertEquals("EUR", topUp.currency());
         assertEquals("700.00", topUp.amount().toPlainString());
-        assertEquals("MTB RKC 42", topUp.counterpartyRaw());
+        assertEquals("MTB RKC 42 - Пополнение наличными в ПВН МТБанка", topUp.counterpartyRaw());
         assertEquals("MTBank", topUp.accountName());
 
         ParsedOperation payment = ops.get(1);
         assertEquals("EXPENSE", payment.direction());
         assertEquals("252.79", payment.amount().toPlainString());
-        assertEquals("RYANAIR224N6EV7K", payment.counterpartyRaw());
+        assertEquals("RYANAIR224N6EV7K - Оплата товаров и услуг", payment.counterpartyRaw());
     }
 
     @Test
@@ -98,7 +98,7 @@ class MtbankJsonParserTest {
         List<ParsedOperation> ops = parser.parse(json.getBytes(StandardCharsets.UTF_8));
         assertEquals(1, ops.size());
         assertEquals("EXPENSE", ops.getFirst().direction());
-        assertEquals("EUROOPT", ops.getFirst().counterpartyRaw());
+        assertEquals("EUROOPT - Оплата товаров и услуг", ops.getFirst().counterpartyRaw());
         assertEquals("BYN", ops.getFirst().currency());
     }
 

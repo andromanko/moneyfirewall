@@ -93,7 +93,17 @@ public class MtbankJsonStatementParser implements BankStatementParser {
 
         String place = op.hasNonNull("place") ? op.get("place").asText().trim() : "";
         String description = op.hasNonNull("description") ? op.get("description").asText().trim() : "";
-        String counterparty = !place.isEmpty() ? place : (!description.isEmpty() ? description : "Imported");
+        // Combine place (channel) and description (actual recipient/purpose) when both exist
+        String counterparty;
+        if (!place.isEmpty() && !description.isEmpty() && !place.equalsIgnoreCase(description)) {
+            counterparty = place + " - " + description;
+        } else if (!place.isEmpty()) {
+            counterparty = place;
+        } else if (!description.isEmpty()) {
+            counterparty = description;
+        } else {
+            counterparty = "Imported";
+        }
 
         Instant occurredAt = parseOccurredAt(op);
 
