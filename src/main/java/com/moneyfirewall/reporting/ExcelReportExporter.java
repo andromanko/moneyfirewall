@@ -52,6 +52,7 @@ public class ExcelReportExporter {
             autoSizeColumns(byCategorySheet, t.byCategory());
             autoSizeColumns(byMemberSheet, t.byMember());
             autoSizeColumns(transactionsSheet, t.transactions());
+            applyAutoFilter(transactionsSheet, t.transactions());
             autoSizeColumns(byHashtagSheet, t.byHashtag());
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -67,6 +68,15 @@ public class ExcelReportExporter {
         for (int i = 0; i < max; i++) {
             sheet.autoSizeColumn(i);
         }
+    }
+
+    private void applyAutoFilter(XSSFSheet sheet, List<List<Object>> rows) {
+        if (rows.isEmpty()) {
+            return;
+        }
+        int colCount = rows.getFirst().size();
+        // Apply autofilter to the header row: A1:Z1 (or however many columns)
+        sheet.setAutoFilter(new org.apache.poi.ss.util.CellRangeAddress(0, 0, 0, colCount - 1));
     }
 
     private void applySummaryGrouping(XSSFSheet sheet, List<List<Object>> rows) {
